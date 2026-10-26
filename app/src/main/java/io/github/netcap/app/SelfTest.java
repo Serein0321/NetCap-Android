@@ -1,13 +1,13 @@
 package io.github.netcap.app;
 
 import android.app.Instrumentation;
-import android.os.Bundle;
 import android.content.Context;
-import org.json.JSONObject;
+import android.os.Bundle;
 import java.io.*;
 import java.nio.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import org.json.JSONObject;
 
 /** 仅通过 adb instrumentation 显式运行；验证真实 Android 文件解析与导出，而非界面占位数据。 */
 public final class SelfTest extends Instrumentation {
@@ -140,8 +140,7 @@ public final class SelfTest extends Instrumentation {
             try (BufferedReader in = new BufferedReader(
                      new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
                 String line;
-                while ((line = in.readLine()) != null)
-                    nativeLog.append(line);
+                while ((line = in.readLine()) != null) nativeLog.append(line);
             }
             require(process.waitFor() == 0, "原生解析检查：" + nativeLog);
             log.append("原生 ELF 可执行与 65536 组解析边界：通过\n");
@@ -173,8 +172,7 @@ public final class SelfTest extends Instrumentation {
             try (BufferedReader in = new BufferedReader(
                      new InputStreamReader(disk.getInputStream(), StandardCharsets.UTF_8))) {
                 String line;
-                while ((line = in.readLine()) != null)
-                    diskLog.append(line);
+                while ((line = in.readLine()) != null) diskLog.append(line);
             }
             require(disk.waitFor() == 0, "原生写盘检查：" + diskLog);
             require(concurrentReads > 0, "未观察到写盘期间的索引读取");
@@ -194,6 +192,50 @@ public final class SelfTest extends Instrumentation {
             }
             require(PacketStore.count(reread) == 1200, "跨段合并导出回读");
             log.append("7200 万字节原生写盘、64 MiB 分段、1200 包停止排空、跨段导出回读：通过\n");
+            PacketFilter filter = new PacketFilter();
+            filter.direction = 255;
+            require(PacketStore.query(a, -1, filter, () -> false).records.size() == 128,
+                "新分页128与未知方向筛选");
+            filter.ids = new HashSet<>(Arrays.asList(1L, 175L));
+            require(
+                PacketStore.query(a, -1, filter, () -> false).records.size() == 2, "稀疏收藏查询");
+            PacketNotes.edit(a, Collections.singleton(1L), false, "设备自检收藏");
+            require(PacketNotes.read(a).get(1L).equals("设备自检收藏"), "收藏保存");
+            PacketNotes.edit(a, Collections.singleton(1L), false, "改名");
+            require(PacketNotes.read(a).get(1L).equals("改名"), "收藏原子替换");
+            PacketNotes.edit(a, Collections.singleton(1L), true, null);
+            require(
+                PacketNotes.read(a).isEmpty() && PacketStore.count(a) == 175, "移除收藏保留原包");
+            JSONObject quality = IntegrityReport.generate(a, PacketStore.manifest(a), () -> false);
+            require(quality.getLong("recordsChecked") == 175
+                    && quality.getJSONArray("errors").length() == 0,
+                "完整性文件检查");
+            File isolation = dir(c, "unknown_isolation");
+            java.lang.Process isolated = new ProcessBuilder(
+                core.getAbsolutePath(), "reliability-test", isolation.getAbsolutePath())
+                                             .redirectErrorStream(true)
+                                             .start();
+            if (!isolated.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                isolated.destroyForcibly();
+                throw new IOException("未知包写盘自检超时");
+            }
+            String isolatedLog;
+            try (InputStream in = isolated.getInputStream();
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream()) {
+                PacketStore.copy(in, bytes);
+                isolatedLog = bytes.toString("UTF-8");
+            }
+            require(isolated.exitValue() == 0, "归属/隔离写盘自检：" + isolatedLog);
+            File u = new File(isolation, "unattributed");
+            require(PacketStore.count(isolation) == 10 && PacketStore.count(u) == 10,
+                "主/未知索引独立");
+            PacketStore.Query uq = PacketStore.query(u, -1, true, "", 0, () -> false);
+            require(uq.records.size() == 10 && (uq.records.get(0).flags & 8) != 0
+                    && uq.records.get(0).uid == -1,
+                "未知标记");
+            require(PacketStore.readText(new File(u, "attribution.jsonl")).contains("timeout"),
+                "归属失败证据落盘");
+            log.append("新分页、收藏改名/移除、完整性报告、归属依据与未知包独立写盘：通过\n");
             result.putString("stream", log.toString());
             finish(-1, result);
         } catch (Throwable e) {

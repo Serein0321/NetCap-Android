@@ -45,7 +45,7 @@ public final class MainActivity extends Activity {
         symbol.setGravity(Gravity.CENTER);
         root.addView(symbol);
         TextView title = new TextView(this);
-        title.setText("内核抓包工具");
+        title.setText("NetCap");
         title.setTextSize(26);
         title.setTextColor(0xfff1f2fa);
         title.setTypeface(null, Typeface.BOLD);

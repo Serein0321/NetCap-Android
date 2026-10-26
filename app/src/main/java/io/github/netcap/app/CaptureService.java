@@ -8,12 +8,12 @@ import android.os.*;
 import android.provider.Settings;
 import android.view.*;
 import android.widget.*;
-import org.json.*;
 import java.io.*;
 import java.lang.Process;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
+import org.json.*;
 
 /** 会话不依赖 Activity；控制通道为继承的 stdin/stdout，不开放任意 Root 命令接口。 */
 public final class CaptureService extends Service {
@@ -93,7 +93,7 @@ public final class CaptureService extends Service {
         stopSelf();
     }
     /** Root 管理器的普通授权页可能在悬浮层下面：请求期间临时隐藏，完成后按原顺序恢复。 */
-    private static final class RootWindowLease implements AutoCloseable {
+    static final class RootWindowLease implements AutoCloseable {
         private final CaptureService owner;
         private WorkspaceUi view;
         private final java.util.concurrent.atomic.AtomicBoolean closed =
@@ -268,7 +268,7 @@ public final class CaptureService extends Service {
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         return new Notification.Builder(this, "capture")
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("内核抓包工具")
+            .setContentTitle("NetCap")
             .setContentText(message)
             .setContentIntent(open)
             .setOngoing(true)
@@ -323,6 +323,7 @@ public final class CaptureService extends Service {
         File session = null;
         boolean terminal = false;
         RootWindowLease authorization = null;
+        NetworkTimeline timeline = null;
         try {
             File base = new File(path);
             if (!base.isDirectory() && !base.mkdirs())
@@ -342,6 +343,24 @@ public final class CaptureService extends Service {
             if (!session.mkdir())
                 throw new IOException("无法创建新的会话目录");
             activeSession = session;
+            boolean keepUnknown =
+                uid >= 0 && getSharedPreferences("settings", 0).getBoolean("keepUnknown", false);
+            if (keepUnknown) {
+                File unknown = new File(session, "unattributed");
+                if (!unknown.mkdir())
+                    throw new IOException("无法创建归属未知数据目录");
+                PacketStore.saveManifest(unknown,
+                    new JSONObject()
+                        .put("label", label + " · 归属未知")
+                        .put("scope", "unknown")
+                        .put("state", "capturing")
+                        .put("started", System.currentTimeMillis()));
+            }
+            try {
+                timeline = new NetworkTimeline(this, session, iface);
+            } catch (Exception e) {
+                meta.put("networkTimelineError", e.toString());
+            }
             meta.put("label", label)
                 .put("uid", uid)
                 .put("scope", uid < 0 ? "whole-device" : "socket-association")
@@ -349,7 +368,10 @@ public final class CaptureService extends Service {
                 .put("state", "starting")
                 .put("protocol", proto)
                 .put("interface", iface)
-                .put("formatVersion", 1)
+                .put("formatVersion", 2)
+                .put("retainUnknown", keepUnknown)
+                .put("pendingMillis", 2000)
+                .put("pendingBytes", 8 * 1024 * 1024)
                 .put("captureSource", "AF_PACKET/SOCK_DGRAM")
                 .put("attribution",
                     uid < 0 ? "not-requested" : "best-effort; unknown flows excluded and counted");
@@ -358,7 +380,7 @@ public final class CaptureService extends Service {
             authorization = RootWindowLease.pause();
             child = root(this,
                 "capture " + quote(session.getAbsolutePath()) + " " + android.os.Process.myUid()
-                    + " " + uid + " " + proto + " " + iface);
+                    + " " + uid + " " + proto + " " + iface + " " + (keepUnknown ? "1" : "0"));
             java.util.concurrent.atomic.AtomicBoolean handshake =
                 new java.util.concurrent.atomic.AtomicBoolean();
             final Process startedChild = child;
@@ -387,6 +409,8 @@ public final class CaptureService extends Service {
                         handshake.set(true);
                         handshakeDeadline.cancel(false);
                         lockCpu();
+                        meta.put("captureStarted", System.currentTimeMillis())
+                            .put("captureElapsedStart", SystemClock.elapsedRealtime());
                         meta.put("state", requestedStop ? "stopping" : "capturing")
                             .put("message", j.optString("message"));
                     } else if (type.equals("stats") || type.equals("stopped")) {
@@ -397,6 +421,11 @@ public final class CaptureService extends Service {
                         }
                         if (type.equals("stopped")) {
                             terminal = true;
+                            meta.put("captureDurationMillis",
+                                Math.max(0,
+                                    SystemClock.elapsedRealtime()
+                                        - meta.optLong(
+                                            "captureElapsedStart", SystemClock.elapsedRealtime())));
                             boolean loss = j.optLong("kernelDrops") > 0
                                 || j.optLong("queueDrops") > 0 || j.optLong("truncated") > 0
                                 || !j.optBoolean("kernelStatsAvailable")
@@ -432,16 +461,55 @@ public final class CaptureService extends Service {
             } catch (Exception ignored) {
             }
         } finally {
+            if (timeline != null) {
+                timeline.close();
+                if (!timeline.error.isEmpty())
+                    try {
+                        meta.put("networkTimelineError", timeline.error);
+                    } catch (Exception ignored) {
+                    }
+            }
             if (authorization != null)
                 authorization.close();
             releaseCpu();
             try {
+                if (meta.has("captureElapsedStart") && !meta.has("captureDurationMillis"))
+                    meta.put("captureDurationMillis",
+                        Math.max(0,
+                            SystemClock.elapsedRealtime() - meta.optLong("captureElapsedStart")));
                 meta.put("finished", System.currentTimeMillis());
                 if (session != null)
                     PacketStore.saveManifest(session, meta);
             } catch (Exception e) {
                 try {
                     meta.put("error", "会话状态保存失败: " + e.getMessage());
+                } catch (Exception ignored) {
+                }
+            }
+            try {
+                if (session != null) {
+                    File u = new File(session, "unattributed");
+                    if (u.isDirectory()) {
+                        JSONObject um = PacketStore.manifest(u)
+                                            .put("state", meta.optString("state"))
+                                            .put("finished", System.currentTimeMillis())
+                                            .put("written", meta.optLong("unknownWritten"));
+                        PacketStore.saveManifest(u, um);
+                    }
+                    stopping = true;
+                    meta.put("stateBeforeReport", meta.optString("state"));
+                    publish(new JSONObject(meta.toString()).put("state", "checking"));
+                    IntegrityReport.generate(session, meta, () -> false);
+                    if (u.isDirectory())
+                        IntegrityReport.generate(u, PacketStore.manifest(u), () -> false);
+                    meta.put("integrityReport", "integrity.json");
+                    PacketStore.saveManifest(session, meta);
+                }
+            } catch (Exception e) {
+                try {
+                    meta.put("reportError", e.toString());
+                    if (session != null)
+                        PacketStore.saveManifest(session, meta);
                 } catch (Exception ignored) {
                 }
             }

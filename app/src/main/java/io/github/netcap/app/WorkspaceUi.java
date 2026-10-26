@@ -12,13 +12,13 @@ import android.provider.Settings;
 import android.view.*;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.*;
-import org.json.*;
 import java.io.*;
 import java.lang.Process;
 import java.net.NetworkInterface;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
+import org.json.*;
 
 /** Service 所有的真正系统悬浮工作台；不启动 Activity，不持有启动页。 */
 final class WorkspaceUi extends ContextThemeWrapper {
@@ -42,14 +42,34 @@ final class WorkspaceUi extends ContextThemeWrapper {
     private FrameLayout body;
     private int tab;
     private SharedPreferences prefs;
-    private TextView status, stats, scope;
+    private TextView status, stats, scope, durationText, rateText, directionText, qualityText;
+    private long rateAt, rateBytes, ratePackets;
+    private String rateSession = "";
+    private boolean wideLayout;
+    private final ExecutorService processIo = Executors.newSingleThreadExecutor();
+    private ProcessCatalog catalog;
+    private boolean processBusy;
+    private List<AppEntry> processCache = new ArrayList<>();
+    private final Map<String, AppEntry> appCache = new LinkedHashMap<>();
+    private final List<Runnable> processListeners = new ArrayList<>();
+    private Exception processError;
+    private long appCacheAt;
+    private PacketFilter packetFilter = new PacketFilter();
+    private int dataView;
+    private String relatedKey = "", relatedLabel = "";
+    private Map<Long, String> bookmarks = new LinkedHashMap<>();
+    private final Map<Long, PacketStore.Record> selected = new LinkedHashMap<>();
+    private File dataSession;
+    private TextView dataInfo;
+    private final List<TextView> viewTabs = new ArrayList<>(), viewBadges = new ArrayList<>();
+    private long relatedCount = -1;
+    private ToolIcon saveTool, compareTool, filterTool, searchTool;
+    private long knownCount = -1;
+    private boolean scrollBusy, exhausted, pageFailed, hasNewer;
+    private final Set<Long> loadedIds = new HashSet<>();
     private Button captureButton;
     private File selectedSession;
-    private String search = "";
-    private int searchProto = 0;
     private long cursor = -1;
-    private File clearedSession;
-    private long clearedAfterSequence;
     private boolean queryBusy = false, liveRefresh = true;
     private volatile int generation = 0;
     private ListView packetList;
@@ -57,18 +77,17 @@ final class WorkspaceUi extends ContextThemeWrapper {
     private final List<Dialog> openDialogs = new ArrayList<>();
     private final Set<Dialog> fixedDialogs = new HashSet<>();
     private BaseAdapter packetAdapter;
-    private PacketStore.Record pinned;
-    private byte[] pinnedPayload;
     private long lastRefresh = 0;
     private final Runnable tick = new Runnable() {
         public void run() {
             updateStatus();
-            if (tab == 1 && CaptureService.active && liveRefresh && search.isEmpty() && !queryBusy
-                && System.currentTimeMillis() - lastRefresh > 1500) {
-                if (CaptureService.activeSession != null)
-                    selectedSession = CaptureService.activeSession;
+            if (tab == 1 && selectedSession != null
+                && selectedSession.equals(CaptureService.activeSession) && liveRefresh
+                && dataView == 0 && selected.isEmpty() && !scrollBusy && !queryBusy
+                && packetList != null && packetList.getFirstVisiblePosition() == 0
+                && System.currentTimeMillis() - lastRefresh > 1800
+                && PacketStore.count(selectedSession) != knownCount)
                 loadPackets(true);
-            }
             ui.postDelayed(this, 600);
         }
     };
@@ -80,6 +99,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
             R.style.OverlayTheme);
         service = owner;
         prefs = getSharedPreferences("settings", 0);
+        catalog = new ProcessCatalog(this);
         prefs.edit().remove("screenshots").apply();
         if (!prefs.getBoolean("refinedDark", false))
             prefs.edit().putInt("opacity", 86).putBoolean("refinedDark", true).apply();
@@ -112,6 +132,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
             android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, workspaceBack);
         ui.removeCallbacks(tick);
         ui.post(tick);
+        refreshProcesses(null);
     }
     void hide() {
         resumeAfterRoot = false;
@@ -121,8 +142,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
         queryBusy = false;
         ui.removeCallbacks(tick);
         getWindow().getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(workspaceBack);
-        for (Dialog d : new ArrayList<>(openDialogs))
-            d.dismiss();
+        for (Dialog d : new ArrayList<>(openDialogs)) d.dismiss();
         openDialogs.clear();
         fixedDialogs.clear();
         getSystemService(InputMethodManager.class)
@@ -134,6 +154,8 @@ final class WorkspaceUi extends ContextThemeWrapper {
         hide();
         ui.removeCallbacksAndMessages(null);
         afterRoot.clear();
+        catalog.close();
+        processIo.shutdownNow();
         io.shutdownNow();
     }
     void pauseForRoot() {
@@ -172,12 +194,13 @@ final class WorkspaceUi extends ContextThemeWrapper {
         rootHidden.clear();
         List<Runnable> pending = new ArrayList<>(afterRoot);
         afterRoot.clear();
-        for (Runnable r : pending)
-            r.run();
+        for (Runnable r : pending) r.run();
     }
     void resized() {
         if (isVisible()) {
             getWindow().setLayout(-1, -1);
+            if (wideLayout != landscape())
+                build();
             shell.requestApplyInsets();
             for (Dialog d : new ArrayList<>(openDialogs))
                 if (d.isShowing())
@@ -332,13 +355,17 @@ final class WorkspaceUi extends ContextThemeWrapper {
     void allowScreenCapture() {
         List<Dialog> windows = new ArrayList<>(openDialogs);
         windows.add(workspace);
-        for (Dialog d : windows)
-            d.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        for (Dialog d : windows) d.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
     }
     private void applyBackdrop() {
         shell.setBackgroundColor((prefs.getInt("opacity", 86) * 255 / 100 << 24) | 0x1b1d25);
     }
+    private boolean landscape() {
+        android.graphics.Rect r = getWindowManager().getCurrentWindowMetrics().getBounds();
+        return r.width() > r.height();
+    }
     private void build() {
+        wideLayout = landscape();
         shell = col();
         applyBackdrop();
         shell.setClickable(true); // 半透明只影响显示；空白位置也消费触摸，不传给游戏。
@@ -361,20 +388,20 @@ final class WorkspaceUi extends ContextThemeWrapper {
         processIcon.setBackground(background(0x503e4357, 12));
         processIcon.setContentDescription("选择应用进程");
         processIcon.setOnClickListener(v -> processDialog());
-        header.addView(processIcon, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        header.addView(processIcon, new LinearLayout.LayoutParams(dp(40), dp(40)));
         nav = row();
-        header.addView(nav, new LinearLayout.LayoutParams(0, dp(48), 1));
+        header.addView(nav, new LinearLayout.LayoutParams(0, dp(40), 1));
         Button collapse = button("×", false, () -> collapse());
         collapse.setTextSize(24);
         collapse.setPadding(0, 0, 0, 0);
         collapse.setContentDescription("收起为悬浮球，抓包继续");
-        header.addView(collapse, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        header.addView(collapse, new LinearLayout.LayoutParams(dp(40), dp(40)));
         shell.addView(header);
         gap(shell, 4);
         processLabel = text("", 12, TEXT);
         processLabel.setSingleLine(true);
         processLabel.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        processLabel.setPadding(dp(6), dp(6), dp(6), dp(6));
+        processLabel.setPadding(dp(6), dp(2), dp(6), dp(2));
         processLabel.setOnClickListener(v -> processDialog());
         LinearLayout processRow = row();
         processRow.addView(processLabel, new LinearLayout.LayoutParams(0, -2, 1));
@@ -386,7 +413,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
         View divider = new View(this);
         divider.setBackgroundColor(0x807e879e);
         shell.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
-        gap(shell, 8);
+        gap(shell, 4);
         body = new FrameLayout(this);
         shell.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
         allowScreenCapture();
@@ -397,11 +424,11 @@ final class WorkspaceUi extends ContextThemeWrapper {
         tab = index;
         generation++;
         queryBusy = false;
-        status = stats = scope = null;
+        status = stats = scope = durationText = rateText = directionText = qualityText = null;
         captureButton = null;
         body.removeAllViews();
         nav.removeAllViews();
-        String[] labels = {"◉\n抓包", "≋\n数据", "▤\n历史", "⚙\n设置"};
+        String[] labels = {"抓包", "数据", "历史", "设置"};
         for (int i = 0; i < labels.length; i++) {
             final int page = i;
             TextView t = text(labels[i], 12, i == tab ? ACCENT : MUTED);
@@ -427,28 +454,71 @@ final class WorkspaceUi extends ContextThemeWrapper {
     }
     private void home() {
         ScrollView sc = scroll();
-        LinearLayout content = col();
+        LinearLayout content = landscape() ? row() : col();
+        content.setGravity(Gravity.TOP);
         sc.addView(content);
         body.addView(sc);
-        LinearLayout session = card(content, "本次记录");
-        status = text("准备就绪", 16, ACCENT);
-        stats = text("0 包  ·  0 B", 24, TEXT);
-        scope = text("", 13, MUTED);
-        gap(session, 12);
-        session.addView(status);
-        gap(session, 12);
-        session.addView(stats);
-        gap(session, 10);
-        session.addView(scope);
-        gap(session, 14);
+        LinearLayout primary = col(), secondary = col();
+        if (landscape()) {
+            content.addView(primary, new LinearLayout.LayoutParams(0, -2, 1));
+            content.addView(secondary, new LinearLayout.LayoutParams(0, -2, 1));
+        } else {
+            content.addView(primary);
+            content.addView(secondary);
+        }
+        LinearLayout hero = card(primary, "");
+        LinearLayout head = row();
+        status = text("准备就绪", 14, ACCENT);
+        head.addView(status, new LinearLayout.LayoutParams(0, -2, 1));
+        durationText = text("00:00:00", 22, TEXT);
+        durationText.setTypeface(Typeface.MONOSPACE);
+        head.addView(durationText);
+        hero.addView(head);
+        gap(hero, 8);
+        stats = text("0 包 · 0 B", 23, TEXT);
+        stats.setTypeface(null, Typeface.BOLD);
+        hero.addView(stats);
+        gap(hero, 6);
+        rateText = text("0 包/s · 0 B/s", 12, MUTED);
+        hero.addView(rateText);
+        gap(hero, 10);
         captureButton = button("开始抓包", true, () -> {
             if (CaptureService.active)
                 stopCapture();
             else
                 startCapture();
         });
-        session.addView(captureButton, new LinearLayout.LayoutParams(-1, dp(54)));
+        hero.addView(captureButton, new LinearLayout.LayoutParams(-1, dp(46)));
+        LinearLayout actions = row();
+        actions.addView(compactButton("查看数据", () -> {
+            selectedSession = CaptureService.activeSession;
+            showTab(1);
+        }), new LinearLayout.LayoutParams(0, dp(40), 1));
+        actions.addView(
+            compactButton("完整性报告", () -> reportDialog(CaptureService.activeSession)),
+            new LinearLayout.LayoutParams(0, dp(40), 1));
+        hero.addView(actions);
+        LinearLayout direction = card(secondary, "通信与归属");
+        directionText = text("", 13, TEXT);
+        gap(direction, 6);
+        direction.addView(directionText);
+        LinearLayout quality = card(secondary, "保存质量");
+        qualityText = text("", 12, MUTED);
+        gap(quality, 6);
+        quality.addView(qualityText);
+        scope = text("", 12, RED);
+        quality.addView(scope);
         updateStatus();
+    }
+    private Button compactButton(String name, Runnable action) {
+        Button b = button(name, false, action);
+        b.setMinHeight(0);
+        b.setMinimumHeight(0);
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        b.setTextSize(12);
+        b.setPadding(dp(8), 0, dp(8), 0);
+        return b;
     }
     private void updateStatus() {
         JSONObject j = CaptureService.snapshot();
@@ -475,7 +545,8 @@ final class WorkspaceUi extends ContextThemeWrapper {
             return;
         String state = j.optString("state");
         String label = CaptureService.active
-            ? (CaptureService.stopping           ? "正在排空并保存…"
+            ? (state.equals("checking")          ? "正在检查完整性…"
+                      : CaptureService.stopping  ? "正在排空并保存…"
                       : state.equals("starting") ? "等待 Root 授权…"
                                                  : "正在记录")
             : state.equals("saved")                                ? "文件已保存"
@@ -486,16 +557,56 @@ final class WorkspaceUi extends ContextThemeWrapper {
         status.setTextColor(state.equals("error") || state.equals("interrupted") ? RED : ACCENT);
         stats.setText(
             j.optLong("written") + " 包  ·  " + PacketStore.formatBytes(j.optLong("bytes")));
-        String detail = "发出 " + j.optLong("up") + "   收到 " + j.optLong("down") + "\n内核丢包 "
-            + (j.optBoolean("kernelStatsAvailable") ? String.valueOf(j.optLong("kernelDrops"))
-                                                    : "未采样")
-            + " · 队列丢弃 " + j.optLong("queueDrops") + " · 截断 " + j.optLong("truncated");
-        detail += "\n观测 " + j.optLong("received") + " · 纳入 " + j.optLong("accepted")
-            + " · 已保存 " + j.optLong("written") + "\n筛除 " + j.optLong("filtered")
-            + " · 未归属 " + j.optLong("unresolved");
-        if (!j.optString("error").isEmpty())
-            detail += "\n" + j.optString("error");
-        scope.setText(detail);
+        long duration =
+            !j.has("captureDurationMillis") && CaptureService.active && j.has("captureElapsedStart")
+            ? Math.max(0, SystemClock.elapsedRealtime() - j.optLong("captureElapsedStart"))
+            : j.optLong("captureDurationMillis");
+        durationText.setText(String.format(Locale.ROOT, "%02d:%02d:%02d", duration / 3600000,
+            duration / 60000 % 60, duration / 1000 % 60));
+        long now = SystemClock.elapsedRealtime(),
+             bytes = j.optLong("bytes") + j.optLong("unknownBytes"),
+             packets = j.optLong("written") + j.optLong("unknownWritten");
+        String id = CaptureService.activeSession == null
+            ? ""
+            : CaptureService.activeSession.getAbsolutePath();
+        if (!id.equals(rateSession) || bytes < rateBytes) {
+            rateAt = 0;
+            rateSession = id;
+        }
+        if (rateAt == 0) {
+            rateAt = now;
+            rateBytes = bytes;
+            ratePackets = packets;
+            rateText.setText("0 包/s · 0 B/s");
+        } else if (now - rateAt >= 1000) {
+            long dt = now - rateAt;
+            rateText.setText(CaptureService.active
+                    ? (packets - ratePackets) * 1000 / dt + " 包/s · "
+                        + PacketStore.formatBytes((bytes - rateBytes) * 1000 / dt) + "/s"
+                    : "已停止");
+            rateAt = now;
+            rateBytes = bytes;
+            ratePackets = packets;
+        }
+        directionText.setText("↑ 发出  " + j.optLong("up") + "     ↓ 收到  " + j.optLong("down")
+            + "\n归属未知已保留  " + j.optLong("unknownWritten") + " 包  ·  "
+            + PacketStore.formatBytes(j.optLong("unknownBytes")) + "\n观测  "
+            + j.optLong("received") + "     入队  " + j.optLong("accepted"));
+        qualityText.setText("内核丢弃  "
+            + (j.optBoolean("kernelStatsAvailable") ? j.optLong("kernelDrops") : "未采样")
+            + "     队列丢弃  " + j.optLong("queueDrops") + "\n未知归属排除  "
+            + j.optLong("unresolved") + "     明确过滤  " + j.optLong("filtered") + "\n协议过滤  "
+            + j.optLong("protocolFiltered") + "     其他 UID  " + j.optLong("otherUidFiltered")
+            + "\n截断  " + j.optLong("truncated") + "     保存后解析失败  "
+            + j.optLong("parseFailedSaved") + "\n暂存超时  " + j.optLong("pendingExpired")
+            + "     暂存满  " + j.optLong("pendingLimit") + "\n核心写盘错误  "
+            + (j.optLong("writeFailure") > 0 ? "有" : "无") + "     等待写出  "
+            + j.optLong("unsavedAccepted"));
+        String err = j.optString("error");
+        if (!j.optString("reportError").isEmpty())
+            err += "\n完整性报告失败：" + j.optString("reportError");
+        scope.setText(err.trim());
+        scope.setVisibility(err.trim().isEmpty() ? View.GONE : View.VISIBLE);
         captureButton.setText(CaptureService.active
                 ? (CaptureService.stopping ? "正在保存…" : "停止并保存")
                 : "开始抓包");
@@ -601,10 +712,12 @@ final class WorkspaceUi extends ContextThemeWrapper {
                         - Math.max(bars.bottom, in.getInsets(WindowInsets.Type.ime()).bottom)
                         - dp(20);
                     int height =
-                        Math.max(dp(120), Math.min((int) (bounds.height() * .78), available));
+                        Math.max(dp(120), Math.min((int) (bounds.height() * .92), available));
                     WindowManager.LayoutParams lp = d.getWindow().getAttributes();
                     if (lp.height != height)
-                        d.getWindow().setLayout(Math.min(bounds.width() - dp(24), dp(620)), height);
+                        d.getWindow().setLayout(
+                            Math.min(bounds.width() - dp(16), dp(landscape() ? 1100 : 620)),
+                            height);
                 }
                 return v.onApplyWindowInsets(in);
             });
@@ -644,31 +757,28 @@ final class WorkspaceUi extends ContextThemeWrapper {
         Window w = d.getWindow();
         if (w != null) {
             android.graphics.Rect b = getWindowManager().getCurrentWindowMetrics().getBounds();
-            w.setLayout(Math.min(b.width() - dp(24), dp(620)),
+            w.setLayout(Math.min(b.width() - dp(16), dp(landscape() ? 1100 : 620)),
                 Boolean.TRUE.equals(w.getDecorView().getTag())
-                    ? (int) (b.height() * .78)
+                    ? (int) (b.height() * .92)
                     : WindowManager.LayoutParams.WRAP_CONTENT);
         }
     }
-    private void processDialog() {
-        LinearLayout box = col();
-        box.setPadding(dp(18), dp(20), dp(18), dp(14));
-        TextView title = text("选择应用进程", 21, TEXT);
-        title.setTypeface(null, Typeface.BOLD);
-        box.addView(title);
-        gap(box, 10);
-        ListView list = new ListView(this);
-        list.setDivider(new ColorDrawable(0xff3a3d49));
-        list.setDividerHeight(dp(1));
-        box.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
-        Dialog d = dialog("", box);
-        sizeDialog(d, true);
-        io.execute(() -> {
+    private void refreshProcesses(Runnable listener) {
+        if (listener != null)
+            processListeners.add(listener);
+        if (processBusy)
+            return;
+        processBusy = true;
+        processError = null;
+        processIo.execute(() -> {
             try {
-                List<JSONObject> data = CaptureService.processes(this);
+                List<JSONObject> data = catalog.snapshot();
                 List<AppEntry> all = new ArrayList<>();
+                if (SystemClock.elapsedRealtime() - appCacheAt > 300000) {
+                    appCache.clear();
+                    appCacheAt = SystemClock.elapsedRealtime();
+                }
                 PackageManager pm = getPackageManager();
-                Map<String, AppEntry> apps = new HashMap<>();
                 for (JSONObject j : data) {
                     String cmd = j.optString("name"), pkg = cmd.split(":", 2)[0];
                     if (pkg.equals(getPackageName()))
@@ -682,107 +792,147 @@ final class WorkspaceUi extends ContextThemeWrapper {
                     e.pkg = pkg;
                     e.name = pkg;
                     e.main = cmd.equals(pkg);
-                    if (e.uid == prefs.getInt("uid", -1)
-                        && (e.pid == prefs.getInt("pid", -1)
-                            || (prefs.getInt("pid", -1) < 0 && e.main
-                                && e.pkg.equals(prefs.getString("package", "")))))
-                        prefs.edit().putInt("pid", e.pid).putLong("rss", e.rss).apply();
-                    AppEntry cached = apps.get(pkg);
-                    if (cached != null) {
-                        e.name = cached.name;
-                        e.icon = cached.icon;
-                        e.system = cached.system;
-                        e.game = cached.game;
-                    } else
+                    AppEntry cached = appCache.get(pkg);
+                    if (cached == null) {
+                        cached = new AppEntry();
+                        cached.name = pkg;
                         try {
                             ApplicationInfo info = pm.getApplicationInfo(pkg, 0);
-                            e.name = pm.getApplicationLabel(info).toString();
-                            e.icon = pm.getApplicationIcon(info);
-                            e.system = (info.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
-                            e.game = info.category == ApplicationInfo.CATEGORY_GAME;
+                            cached.name = pm.getApplicationLabel(info).toString();
+                            cached.icon = pm.getApplicationIcon(info);
+                            cached.system = (info.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
+                            cached.game = info.category == ApplicationInfo.CATEGORY_GAME;
                         } catch (Exception ignored) {
                         }
-                    if (cached == null)
-                        apps.put(pkg, e);
+                        if (appCache.size() < 512)
+                            appCache.put(pkg, cached);
+                    }
+                    e.name = cached.name;
+                    e.icon = cached.icon;
+                    e.system = cached.system;
+                    e.game = cached.game;
                     all.add(e);
                 }
                 all.sort((a, b) -> {
-                    long oa = prefs.getLong("recent:" + a.pkg, 0),
-                         ob = prefs.getLong("recent:" + b.pkg, 0);
-                    if (oa != ob)
-                        return Long.compare(ob, oa);
+                    long x = prefs.getLong("recent:" + a.pkg, 0),
+                         y = prefs.getLong("recent:" + b.pkg, 0);
+                    if (x != y)
+                        return Long.compare(y, x);
                     if (a.game != b.game)
                         return a.game ? -1 : 1;
                     if (a.system != b.system)
                         return a.system ? 1 : -1;
                     if (a.main != b.main)
                         return a.main ? -1 : 1;
-                    if (a.started != b.started)
-                        return Long.compare(b.started, a.started);
-                    return Integer.compare(b.pid, a.pid);
+                    return a.started != b.started ? Long.compare(b.started, a.started)
+                                                  : Integer.compare(b.pid, a.pid);
                 });
                 post(() -> {
-                    if (!d.isShowing())
-                        return;
-                    List<AppEntry> shown = new ArrayList<>(all);
-                    BaseAdapter adapter = new BaseAdapter() {
-                        public int getCount() {
-                            return shown.size();
-                        }
-                        public Object getItem(int i) {
-                            return shown.get(i);
-                        }
-                        public long getItemId(int i) {
-                            return shown.get(i).pid;
-                        }
-                        public View getView(int i, View convert, android.view.ViewGroup parent) {
-                            AppEntry e = shown.get(i);
-                            LinearLayout line = row();
-                            line.setPadding(dp(4), dp(12), dp(4), dp(12));
-                            ImageView icon = new ImageView(WorkspaceUi.this);
-                            icon.setImageDrawable(e.icon == null
-                                    ? getDrawable(android.R.drawable.sym_def_app_icon)
-                                    : e.icon);
-                            line.addView(icon, new LinearLayout.LayoutParams(dp(42), dp(42)));
-                            LinearLayout labels = col();
-                            labels.setPadding(dp(12), 0, 0, 0);
-                            labels.addView(text(e.name, 15, TEXT));
-                            labels.addView(text(e.cmd, 11, MUTED));
-                            labels.addView(text("PID " + e.pid + " · " + DisplayFormat.memory(e.rss)
-                                    + (e.main ? " · 主进程" : " · 子进程"),
-                                11, ACCENT));
-                            line.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
-                            return line;
-                        }
-                    };
-                    list.setAdapter(adapter);
-                    list.setOnItemClickListener((a, v, p, id) -> {
-                        if (CaptureService.active) {
-                            toast("当前会话目标已固定，请停止后切换");
-                            return;
-                        }
-                        AppEntry e = shown.get(p);
-                        prefs.edit()
-                            .putInt("uid", e.uid)
-                            .putInt("pid", e.pid)
-                            .putLong("rss", e.rss)
-                            .putString("label", e.name)
-                            .putString("package", e.pkg)
-                            .putBoolean("scopeChosen", true)
-                            .putLong("recent:" + e.pkg, System.currentTimeMillis())
-                            .apply();
-                        d.dismiss();
-                        showTab(0);
-                    });
+                    processCache = all;
+                    finishProcesses();
                 });
             } catch (Exception e) {
                 post(() -> {
-                    if (d.isShowing()) {
-                        d.dismiss();
-                        error("读取进程失败", e);
-                    }
+                    processError = e;
+                    finishProcesses();
                 });
             }
+        });
+    }
+    private void finishProcesses() {
+        processBusy = false;
+        for (Runnable r : new ArrayList<>(processListeners)) r.run();
+        processListeners.clear();
+    }
+    private void processDialog() {
+        LinearLayout box = col();
+        box.setPadding(dp(14), dp(14), dp(14), dp(8));
+        TextView title = text("选择应用进程", 18, TEXT);
+        box.addView(title);
+        gap(box, 8);
+        FrameLayout frame = new FrameLayout(this);
+        ListView list = new ListView(this);
+        TextView empty = text("首次读取进程…", 13, MUTED);
+        empty.setGravity(Gravity.CENTER);
+        frame.addView(list, new FrameLayout.LayoutParams(-1, -1));
+        frame.addView(empty, new FrameLayout.LayoutParams(-1, -1));
+        list.setEmptyView(empty);
+        box.addView(frame, new LinearLayout.LayoutParams(-1, 0, 1));
+        Dialog d = dialog("", box);
+        sizeDialog(d, true);
+        final List<AppEntry> shown = new ArrayList<>(processCache);
+        BaseAdapter adapter = new BaseAdapter() {
+            public int getCount() {
+                return shown.size();
+            }
+            public Object getItem(int i) {
+                return shown.get(i);
+            }
+            public long getItemId(int i) {
+                return shown.get(i).pid;
+            }
+            public View getView(int i, View v, ViewGroup parent) {
+                AppEntry e = shown.get(i);
+                LinearLayout line = row();
+                line.setPadding(dp(4), dp(7), dp(4), dp(7));
+                ImageView icon = new ImageView(WorkspaceUi.this);
+                icon.setImageDrawable(
+                    e.icon == null ? getDrawable(android.R.drawable.sym_def_app_icon) : e.icon);
+                line.addView(icon, new LinearLayout.LayoutParams(dp(38), dp(38)));
+                LinearLayout labels = col();
+                labels.setPadding(dp(10), 0, 0, 0);
+                TextView name = text(e.name, 14, TEXT);
+                name.setSingleLine();
+                name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                labels.addView(name);
+                TextView cmd = text(e.cmd + " · PID " + e.pid, 11, MUTED);
+                cmd.setSingleLine();
+                cmd.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                labels.addView(cmd);
+                line.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+                line.addView(text(DisplayFormat.memory(e.rss), 12, ACCENT));
+                return line;
+            }
+        };
+        list.setAdapter(adapter);
+        list.setOnItemClickListener((a, v, i, id) -> {
+            if (CaptureService.active) {
+                toast("当前会话目标已固定，请停止后切换");
+                return;
+            }
+            AppEntry e = shown.get(i);
+            prefs.edit()
+                .putInt("uid", e.uid)
+                .putInt("pid", e.pid)
+                .putLong("rss", e.rss)
+                .putString("label", e.name)
+                .putString("package", e.pkg)
+                .putBoolean("scopeChosen", true)
+                .putLong("recent:" + e.pkg, System.currentTimeMillis())
+                .apply();
+            d.dismiss();
+            showTab(0);
+        });
+        refreshProcesses(() -> {
+            if (!d.isShowing())
+                return;
+            if (processError != null) {
+                empty.setText("读取失败，点击重试");
+                empty.setOnClickListener(v -> {
+                    d.dismiss();
+                    processDialog();
+                });
+                toast(processError.getMessage());
+                return;
+            }
+            int first = list.getFirstVisiblePosition();
+            View v = list.getChildAt(0);
+            int y = v == null ? 0 : v.getTop();
+            shown.clear();
+            shown.addAll(processCache);
+            adapter.notifyDataSetChanged();
+            list.setSelectionFromTop(first, y);
+            empty.setText("没有可选的运行进程");
         });
     }
     private static final class AppEntry {
@@ -797,59 +947,109 @@ final class WorkspaceUi extends ContextThemeWrapper {
     }
     private android.text.TextWatcher watcher(Changed c) {
         return new android.text.TextWatcher() {
-            public void beforeTextChanged(CharSequence s, int st, int count, int after) {
-            }
+            public void beforeTextChanged(CharSequence s, int st, int count, int after) {}
             public void onTextChanged(CharSequence s, int st, int before, int count) {
                 c.changed(s.toString());
             }
-            public void afterTextChanged(android.text.Editable e) {
-            }
+            public void afterTextChanged(android.text.Editable e) {}
         };
     }
+    private ToolIcon tool(LinearLayout row, String kind, String title, Runnable action) {
+        ToolIcon v = new ToolIcon(this, kind, title, action);
+        row.addView(v, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        return v;
+    }
     private void packetsPage() {
+        if (selectedSession == null)
+            selectedSession = CaptureService.activeSession;
+        if (!Objects.equals(dataSession, selectedSession)) {
+            dataSession = selectedSession;
+            packetFilter = new PacketFilter();
+            selected.clear();
+            bookmarks.clear();
+            records.clear();
+            loadedIds.clear();
+            dataView = 0;
+            relatedKey = "";
+            relatedLabel = "";
+            relatedCount = -1;
+            knownCount = -1;
+        }
         LinearLayout page = col();
         body.addView(page);
-        LinearLayout tools = row();
-        tools.addView(text("通信记录", 20, TEXT), new LinearLayout.LayoutParams(0, -2, 1));
-        tools.addView(button("更多", false, () -> dataMenu(tools)));
-        tools.addView(button("刷新", false, () -> {
-            clearedAfterSequence = 0;
-            loadPackets(true);
-        }));
-        page.addView(tools);
-        gap(page, 10);
-        search = "";
-        LinearLayout opts = row();
-        CheckBox auto = new CheckBox(this);
-        auto.setText("实时刷新");
-        auto.setTextColor(MUTED);
-        auto.setTextSize(12);
-        auto.setChecked(liveRefresh);
-        auto.setOnCheckedChangeListener((b, v) -> liveRefresh = v);
-        opts.addView(auto, new LinearLayout.LayoutParams(0, -2, 1));
-        Button proto = button(searchProto == 6 ? "TCP"
-                : searchProto == 17            ? "UDP"
-                                               : "所有协议",
-            false, () -> {});
-        proto.setOnClickListener(v
-            -> alert()
-                .setTitle("显示的协议")
-                .setItems(new String[] {"所有协议", "TCP", "UDP"},
-                    (d, n) -> {
-                        searchProto = n == 1 ? 6 : n == 2 ? 17 : 0;
-                        proto.setText(n == 1 ? "TCP" : n == 2 ? "UDP" : "所有协议");
-                        loadPackets(true);
-                    })
-                .setNegativeButton("取消", null)
-                .show());
-        opts.addView(proto);
-
-        page.addView(opts);
-        gap(page, 8);
+        LinearLayout bar = landscape() ? row() : col();
+        LinearLayout tabs = row(), tools = row();
+        viewTabs.clear();
+        viewBadges.clear();
+        for (int i = 0; i < 3; i++) {
+            final int n = i;
+            LinearLayout segment = row();
+            segment.setGravity(Gravity.CENTER);
+            TextView t = text(new String[] {"全部", "已保存", "关联"}[i], 12, MUTED);
+            t.setSingleLine();
+            segment.addView(t);
+            viewTabs.add(t);
+            TextView badge = text("0", 10, TEXT);
+            badge.setGravity(Gravity.CENTER);
+            badge.setPadding(dp(5), 0, dp(5), 0);
+            badge.setBackground(background(0xff424f70, 9));
+            LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(-2, dp(19));
+            bl.leftMargin = dp(5);
+            segment.addView(badge, bl);
+            viewBadges.add(badge);
+            tabs.addView(segment, new LinearLayout.LayoutParams(0, dp(36), 1));
+            segment.setContentDescription(new String[] {"全部记录", "保存列表", "关联记录"}[i]);
+            segment.setOnClickListener(v -> {
+                if (n == 2 && relatedKey.isEmpty()) {
+                    flowDialog();
+                    return;
+                }
+                dataView = n;
+                selected.clear();
+                liveRefresh = n == 0;
+                loadPackets(true);
+            });
+        }
+        if (landscape())
+            bar.addView(tabs, new LinearLayout.LayoutParams(0, dp(42), 1));
+        else
+            bar.addView(tabs, new LinearLayout.LayoutParams(-1, dp(36)));
+        filterTool = tool(tools, "filter", "筛选", () -> filterDialog());
+        searchTool = tool(tools, "search", "搜索文本或魔数", () -> searchDialog());
+        saveTool = tool(tools, "save", "保存勾选的包", () -> saveSelection());
+        compareTool = tool(tools, "compare", "比较两条已选记录", () -> compareSelected());
+        tool(tools, "group", "连接、协议与长度分组", () -> flowDialog());
+        tool(tools, "select", "选择操作", () -> selectionMenu());
+        tool(tools, "more", "会话与显示操作", () -> dataMenu(tools));
+        if (landscape())
+            bar.addView(tools);
+        else
+            bar.addView(tools, new LinearLayout.LayoutParams(-1, dp(42)));
+        page.addView(bar);
+        FrameLayout area = new FrameLayout(this);
         packetList = new ListView(this);
-        packetList.setDivider(new ColorDrawable(BG));
-        packetList.setDividerHeight(dp(5));
-        page.addView(packetList, new LinearLayout.LayoutParams(-1, 0, 1));
+        packetList.setDivider(new ColorDrawable(0x30515a70));
+        packetList.setDividerHeight(dp(1));
+        packetList.setClipToPadding(false);
+        packetList.setFastScrollEnabled(false);
+        TextView empty = text("尚无数据", 13, MUTED);
+        empty.setGravity(Gravity.CENTER);
+        empty.setOnClickListener(v -> loadPackets(true));
+        area.addView(packetList, new FrameLayout.LayoutParams(-1, -1));
+        area.addView(empty, new FrameLayout.LayoutParams(-1, -1));
+        packetList.setEmptyView(empty);
+        page.addView(area, new LinearLayout.LayoutParams(-1, 0, 1));
+        dataInfo = text("", 11, MUTED);
+        dataInfo.setSingleLine();
+        dataInfo.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        dataInfo.setGravity(Gravity.CENTER_VERTICAL);
+        dataInfo.setOnClickListener(v -> {
+            if (pageFailed)
+                loadPackets(false);
+            else
+                filterDialog();
+        });
+        page.addView(dataInfo, new LinearLayout.LayoutParams(-1, dp(25)));
         packetAdapter = new BaseAdapter() {
             public int getCount() {
                 return records.size();
@@ -860,110 +1060,577 @@ final class WorkspaceUi extends ContextThemeWrapper {
             public long getItemId(int i) {
                 return records.get(i).id;
             }
-            public View getView(int i, View convert, android.view.ViewGroup parent) {
+            public boolean hasStableIds() {
+                return true;
+            }
+            public View getView(int i, View convert, ViewGroup parent) {
+                PacketRow h;
+                if (convert == null) {
+                    h = new PacketRow();
+                    LinearLayout line = row();
+                    line.setMinimumHeight(dp(46));
+                    line.setPadding(0, dp(2), dp(5), dp(2));
+                    h.check = new CheckBox(WorkspaceUi.this);
+                    h.check.setButtonTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+                    h.check.setFocusable(false);
+                    line.addView(h.check, new LinearLayout.LayoutParams(dp(40), dp(44)));
+                    h.labels = landscape() ? row() : col();
+                    h.meta = text("", landscape() ? 11 : 12, ACCENT);
+                    h.route = text("", landscape() ? 12 : 11, TEXT);
+                    h.route.setSingleLine();
+                    h.route.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+                    h.meta.setSingleLine();
+                    if (landscape()) {
+                        h.labels.addView(h.meta, new LinearLayout.LayoutParams(dp(155), -2));
+                        h.labels.addView(h.route, new LinearLayout.LayoutParams(0, -2, 1));
+                    } else {
+                        h.labels.addView(h.meta);
+                        h.labels.addView(h.route);
+                    }
+                    line.addView(h.labels, new LinearLayout.LayoutParams(0, -2, 1));
+                    h.size = text("", 11, MUTED);
+                    h.size.setGravity(Gravity.RIGHT);
+                    if (landscape())
+                        line.addView(h.size, new LinearLayout.LayoutParams(dp(76), -2));
+                    line.setTag(h);
+                    convert = line;
+                } else
+                    h = (PacketRow) convert.getTag();
                 PacketStore.Record r = records.get(i);
-                LinearLayout item = col();
-                item.setPadding(dp(14), dp(12), dp(14), dp(12));
-                item.setBackground(background(SURFACE, 12));
-                LinearLayout head = row();
-                TextView p = text(r.protocol(), 13, r.proto == 17 ? ACCENT : 0xffa7c7ff);
-                p.setTypeface(null, Typeface.BOLD);
-                head.addView(p, new LinearLayout.LayoutParams(0, -2, 1));
-                head.addView(text(r.time() + "  #" + r.id, 11, MUTED));
-                item.addView(head);
-                gap(item, 5);
-                TextView route = text(r.route(), 12, TEXT);
-                route.setMaxLines(2);
-                item.addView(route);
-                gap(item, 5);
-                item.addView(text((r.dir == 1          ? "↑ 发出"
-                                          : r.dir == 0 ? "↓ 收到"
-                                                       : "↔ 方向未知")
-                        + " · " + r.caplen + " B · IPv" + r.version
-                        + ((r.flags & 1) != 0 ? " · 分片" : ""),
-                    11, MUTED));
-                return item;
+                boolean checked = selected.containsKey(r.id);
+                String alias = bookmarks.get(r.id);
+                h.check.setChecked(checked);
+                h.check.setContentDescription("选择记录 " + r.id);
+                h.check.setOnClickListener(v -> toggle(r));
+                h.meta.setText((r.dir == 1          ? "↑ "
+                                       : r.dir == 0 ? "↓ "
+                                                    : "? ")
+                    + r.protocol() + " · " + r.time()
+                    + (landscape() ? "" : "  #" + r.id + " · " + r.caplen + " B")
+                    + (alias != null ? " ★" : ""));
+                h.meta.setTextColor(r.dir == 1 ? 0xff80d5c2 : ACCENT);
+                h.route.setText(
+                    (alias != null && !alias.isEmpty() ? alias + " · " : "") + r.route());
+                h.size.setText(r.caplen + " B  #" + r.id);
+                convert.setBackgroundColor(checked ? 0xe52a344a : SURFACE);
+                return convert;
             }
         };
         packetList.setAdapter(packetAdapter);
         packetList.setOnItemClickListener((a, v, p, id) -> detail(records.get(p)));
-        gap(page, 6);
-        page.addView(button("加载更早的匹配记录", false, () -> {
-            liveRefresh = false;
-            auto.setChecked(false);
-            loadPackets(false);
-        }));
-        if (selectedSession == null && CaptureService.activeSession != null)
-            selectedSession = CaptureService.activeSession;
+        packetList.setOnItemLongClickListener((a, v, p, id) -> {
+            packetMenu(records.get(p));
+            return true;
+        });
+        packetList.setOnScrollListener(new AbsListView.OnScrollListener() {
+            public void onScrollStateChanged(AbsListView v, int state) {
+                scrollBusy = state != SCROLL_STATE_IDLE;
+                if (scrollBusy)
+                    liveRefresh = false;
+                else
+                    maybeLoad();
+            }
+            public void onScroll(AbsListView v, int first, int visible, int total) {
+                if (visible > 0)
+                    maybeLoad();
+            }
+            void maybeLoad() {
+                if (queryBusy || pageFailed || records.isEmpty())
+                    return;
+                int first = packetList.getFirstVisiblePosition(),
+                    last = packetList.getLastVisiblePosition();
+                if (hasNewer && first < 3)
+                    loadWindow(false, true);
+                else if (!exhausted && last >= records.size() - 12)
+                    loadPackets(false);
+            }
+        });
+        updateDataTools();
         if (selectedSession != null)
             loadPackets(true);
     }
+    private static final class PacketRow {
+        CheckBox check;
+        LinearLayout labels;
+        TextView meta, route, size;
+    }
+    private void toggle(PacketStore.Record r) {
+        liveRefresh = false;
+        if (selected.containsKey(r.id))
+            selected.remove(r.id);
+        else {
+            if (selected.size() >= 512) {
+                toast("一次最多勾选 512 条，可分批保存");
+                return;
+            }
+            selected.put(r.id, r);
+        }
+        packetAdapter.notifyDataSetChanged();
+        updateDataTools();
+    }
+    private void updateDataTools() {
+        if (tab != 1 || dataInfo == null)
+            return;
+        long total = selectedSession == null ? 0 : PacketStore.count(selectedSession);
+        long[] counts = {total, bookmarks.size(), relatedCount};
+        for (int i = 0; i < viewTabs.size(); i++) {
+            TextView v = viewTabs.get(i);
+            v.setTextColor(i == dataView ? TEXT : MUTED);
+            ((View) v.getParent())
+                .setBackground(background(i == dataView ? 0xff303b55 : 0x0010121a, 8));
+            TextView badge = viewBadges.get(i);
+            badge.setText("" + counts[i]);
+            badge.setVisibility(counts[i] < 0 ? View.GONE : View.VISIBLE);
+        }
+        saveTool.setEnabled(!selected.isEmpty());
+        compareTool.setEnabled(selected.size() == 2);
+        filterTool.active = packetFilter.protocol != 0 || packetFilter.direction >= 0
+            || packetFilter.readable != 0 || packetFilter.minBytes > 0
+            || packetFilter.maxBytes < Integer.MAX_VALUE;
+        searchTool.active = !packetFilter.text.isEmpty() || packetFilter.magic != null;
+        filterTool.invalidate();
+        searchTool.invalidate();
+        saveTool.invalidate();
+        compareTool.invalidate();
+        String f = (packetFilter.protocol == 0           ? "全部协议"
+                           : packetFilter.protocol == 6  ? "TCP"
+                           : packetFilter.protocol == 17 ? "UDP"
+                                                         : "ICMP")
+            + " · "
+            + (packetFilter.direction < 0         ? "双向"
+                    : packetFilter.direction == 1 ? "发出"
+                    : packetFilter.direction == 0 ? "收到"
+                                                  : "方向未知");
+        if (packetFilter.readable > 0)
+            f += " · " + (packetFilter.readable == 1 ? "可读文本" : "非文本");
+        if (searchTool.active)
+            f += " · 搜索中";
+        dataInfo.setText(
+            (selectedSession != null && selectedSession.getName().equals("unattributed")
+                    ? "归属未知 · "
+                    : "")
+            + (queryBusy         ? "读取中 · "
+                    : pageFailed ? "读取失败，点击重试 · "
+                                 : "")
+            + (selected.isEmpty() ? "已载入 " + records.size() + " 条"
+                                  : "已选 " + selected.size() + " 条")
+            + (dataView == 2 ? " · " + relatedLabel : "") + " · " + f
+            + (exhausted ? " · 已到末尾" : ""));
+    }
     private void loadPackets(boolean reset) {
+        loadWindow(reset, false);
+    }
+    private void loadWindow(boolean reset, boolean newer) {
         if (tab != 1 || selectedSession == null)
             return;
-        if (!reset && queryBusy)
+        if (queryBusy && !reset)
             return;
-        if (!reset && (cursor < 0 || cursor >= PacketStore.count(selectedSession))) {
-            toast("已经到达当前结果末尾");
+        if (!reset && !newer && exhausted)
             return;
-        }
-        int g = ++generation;
+        final int g = ++generation;
         queryBusy = true;
+        pageFailed = false;
         lastRefresh = System.currentTimeMillis();
         File session = selectedSession;
-        long afterSequence = session.equals(clearedSession) ? clearedAfterSequence : 0;
-        long start = reset ? -1 : cursor;
-        String term = search;
-        int proto = searchProto;
-
+        PacketFilter f = packetFilter.copy();
+        int view = dataView;
+        if (view == 2)
+            f.groupKey = relatedKey;
+        long start = reset ? -1 : newer ? records.get(0).id : cursor;
+        int first = packetList.getFirstVisiblePosition();
+        View child = packetList.getChildAt(0);
+        int y = child == null ? 0 : child.getTop();
+        updateDataTools();
         io.execute(() -> {
             try {
-                PacketStore.Query q = PacketStore.query(session, start, true, term, proto,
-                    () -> generation != g || Thread.currentThread().isInterrupted(), afterSequence);
+                Map<Long, String> notes = PacketNotes.read(session);
+                if (view == 1)
+                    f.ids = new HashSet<>(notes.keySet());
+                PacketStore.Query q = newer
+                    ? PacketStore.newer(session, start, f,
+                          () -> generation != g || Thread.currentThread().isInterrupted())
+                    : PacketStore.query(session, start, f,
+                          () -> generation != g || Thread.currentThread().isInterrupted());
                 post(() -> {
                     if (generation != g || tab != 1)
                         return;
                     queryBusy = false;
-                    if (reset)
+                    bookmarks = notes;
+                    knownCount = q.total;
+                    if (reset) {
                         records.clear();
-                    records.addAll(q.records);
-                    if (records.size() > 1600)
-                        records.subList(0, records.size() - 1600).clear();
-                    cursor = q.next;
+                        loadedIds.clear();
+                        exhausted = false;
+                        hasNewer = false;
+                    }
+                    int added = 0;
+                    if (newer) {
+                        Collections.reverse(q.records);
+                        for (int i = q.records.size() - 1; i >= 0; i--) {
+                            PacketStore.Record r = q.records.get(i);
+                            if (loadedIds.add(r.id)) {
+                                records.add(0, r);
+                                added++;
+                            }
+                        }
+                        hasNewer = q.next < q.total;
+                    } else {
+                        for (PacketStore.Record r : q.records)
+                            if (loadedIds.add(r.id))
+                                records.add(r);
+                        cursor = q.next;
+                        exhausted = cursor < 0;
+                    }
+                    int removed = 0;
+                    if (records.size() > 1536) {
+                        removed = records.size() - 1536;
+                        if (newer) {
+                            for (PacketStore.Record r : records.subList(1536, records.size()))
+                                loadedIds.remove(r.id);
+                            records.subList(1536, records.size()).clear();
+                            cursor = records.get(records.size() - 1).id - 2;
+                            exhausted = cursor < 0;
+                        } else {
+                            for (PacketStore.Record r : records.subList(0, removed))
+                                loadedIds.remove(r.id);
+                            records.subList(0, removed).clear();
+                            hasNewer = true;
+                        }
+                    }
                     packetAdapter.notifyDataSetChanged();
+                    if (reset)
+                        packetList.setSelection(0);
+                    else
+                        packetList.setSelectionFromTop(
+                            Math.max(0, first + (newer ? added : -removed)), y);
+                    TextView empty =
+                        (TextView) ((FrameLayout) packetList.getParent()).getChildAt(1);
+                    empty.setText(exhausted ? view == 1 ? "尚无保存的匹配记录" : "没有匹配记录"
+                                            : "正在查找匹配记录…");
+                    updateDataTools();
+                    if (!newer && !exhausted && records.size() < 15)
+                        ui.postDelayed(() -> {
+                            if (generation == g)
+                                loadPackets(false);
+                        }, 40);
                 });
             } catch (Exception e) {
                 post(() -> {
-                    if (generation == g) {
-                        queryBusy = false;
-                        error("读取记录失败", e);
-                    }
+                    if (generation != g)
+                        return;
+                    queryBusy = false;
+                    pageFailed = true;
+                    updateDataTools();
+                    error("读取记录失败", e);
                 });
             }
         });
     }
-    private void detail(PacketStore.Record r) {
+    private void saveSelection() {
+        if (selected.isEmpty())
+            return;
+        changeNotes(new ArrayList<>(selected.keySet()), false, null);
+    }
+    private void changeNotes(Collection<Long> ids, boolean remove, String name) {
+        if (selectedSession == null)
+            return;
+        File f = selectedSession;
+        io.execute(() -> {
+            try {
+                Map<Long, String> notes = PacketNotes.edit(f, ids, remove, name);
+                post(() -> {
+                    if (!f.equals(selectedSession))
+                        return;
+                    bookmarks = notes;
+                    selected.clear();
+                    loadPackets(true);
+                    toast(remove ? "已移出保存列表，原包保留" : "已保存");
+                });
+            } catch (Exception e) {
+                post(() -> error("更新保存列表失败", e));
+            }
+        });
+    }
+    private void selectionMenu() {
+        alert()
+            .setTitle("选择操作")
+            .setItems(new String[] {"全选当前载入记录", "取消所有勾选", "移出保存列表"},
+                (d, n) -> {
+                    if (n == 2) {
+                        if (selected.isEmpty())
+                            toast("请先勾选记录");
+                        else
+                            changeNotes(new ArrayList<>(selected.keySet()), true, null);
+                        return;
+                    }
+                    selected.clear();
+                    if (n == 0) {
+                        for (PacketStore.Record r : records) {
+                            if (selected.size() == 512)
+                                break;
+                            selected.put(r.id, r);
+                        }
+                        liveRefresh = false;
+                    }
+                    packetAdapter.notifyDataSetChanged();
+                    updateDataTools();
+                })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+    private void packetMenu(PacketStore.Record r) {
+        List<String> names = new ArrayList<>(
+            Arrays.asList("查看详情", "查看同一连接", "保存到列表", "复制通信地址"));
+        if (bookmarks.containsKey(r.id)) {
+            names.add("重命名收藏");
+            names.add("移出保存列表");
+        }
+        alert()
+            .setTitle("记录 #" + r.id)
+            .setItems(names.toArray(new String[0]),
+                (d, n) -> {
+                    if (n == 0)
+                        detail(r);
+                    else if (n == 1) {
+                        relatedCount = -1;
+                        relatedKey = PacketFilter.group(r, 0);
+                        relatedLabel = r.protocol() + " · " + r.route();
+                        dataView = 2;
+                        selected.clear();
+                        loadPackets(true);
+                    } else if (n == 2)
+                        changeNotes(Collections.singleton(r.id), false, null);
+                    else if (n == 3) {
+                        getSystemService(android.content.ClipboardManager.class)
+                            .setPrimaryClip(ClipData.newPlainText("通信地址", r.route()));
+                        toast("已复制");
+                    } else if (n == 4)
+                        renameBookmark(r);
+                    else
+                        changeNotes(Collections.singleton(r.id), true, null);
+                })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+    private void renameBookmark(PacketStore.Record r) {
+        EditText name = input("收藏名称");
+        name.setText(bookmarks.getOrDefault(r.id, ""));
         LinearLayout box = col();
-        box.setPadding(dp(16), dp(18), dp(16), dp(12));
-        box.addView(text("记录 #" + r.id + " · " + r.protocol(), 20, TEXT));
-        gap(box, 6);
-        box.addView(text(r.route() + "\n" + r.time() + " · 接口 " + r.iface + " · 捕获 " + r.caplen
-                + " / 原始 " + r.wirelen + " B",
-            11, MUTED));
-        gap(box, 12);
-        LinearLayout actions = row();
-        ScrollView sc = scroll();
-        TextView content = text("正在读取原始记录…", 12, TEXT);
-        content.setTextIsSelectable(true);
-        content.setTypeface(Typeface.MONOSPACE);
-        content.setPadding(dp(4), dp(8), dp(4), dp(8));
-        sc.addView(content);
-        HexDumpView hex = new HexDumpView(this);
-        box.addView(actions);
+        box.setPadding(dp(16), dp(16), dp(16), dp(12));
+        box.addView(text("重命名收藏 #" + r.id, 17, TEXT));
         gap(box, 8);
+        box.addView(name);
+        Dialog d = dialog("", box);
+        fullButton(box, "保存", true, () -> {
+            String value = name.getText().toString().trim();
+            if (value.length() > 100) {
+                name.setError("最多 100 字");
+                return;
+            }
+            changeNotes(Collections.singleton(r.id), false, value);
+            d.dismiss();
+        });
+        sizeDialog(d, false);
+    }
+    private void searchDialog() {
+        LinearLayout box = col();
+        box.setPadding(dp(16), dp(16), dp(16), dp(12));
+        box.addView(text("搜索载荷", 18, TEXT));
+        gap(box, 10);
+        Spinner mode =
+            spinner(new String[] {"文本与地址", "十六进制：载荷任意处", "十六进制：载荷开头"},
+                packetFilter.magic == null ? 0
+                    : packetFilter.prefix  ? 2
+                                           : 1);
+        box.addView(mode);
+        EditText value = input("例如 login 或 01 AB FF");
+        String h = "";
+        if (packetFilter.magic != null)
+            for (byte b : packetFilter.magic) h += String.format(Locale.ROOT, "%02X ", b & 255);
+        value.setText(packetFilter.magic == null ? packetFilter.text : h.trim());
+        box.addView(value);
+        Dialog d = dialog("", box);
+        fullButton(box, "应用搜索", true, () -> {
+            String v = value.getText().toString().trim();
+            byte[] bytes = null;
+            if (mode.getSelectedItemPosition() > 0 && !v.isEmpty()) {
+                String hex = v.replaceAll("\\s+", "");
+                if (hex.length() % 2 != 0 || !hex.matches("[0-9a-fA-F]+")) {
+                    value.setError("请输入成对十六进制字节");
+                    return;
+                }
+                if (hex.length() > 4096) {
+                    value.setError("魔数最多 2048 字节");
+                    return;
+                }
+                bytes = new byte[hex.length() / 2];
+                for (int i = 0; i < bytes.length; i++)
+                    bytes[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+            }
+            packetFilter.magic = bytes;
+            packetFilter.prefix = mode.getSelectedItemPosition() == 2;
+            packetFilter.text = mode.getSelectedItemPosition() == 0 ? v : "";
+            liveRefresh = false;
+            selected.clear();
+            d.dismiss();
+            loadPackets(true);
+        });
+        fullButton(box, "清除搜索", false, () -> {
+            packetFilter.text = "";
+            packetFilter.magic = null;
+            d.dismiss();
+            loadPackets(true);
+        });
+        sizeDialog(d, false);
+    }
+    private Spinner spinner(String[] values, int initial) {
+        Spinner spinner = new Spinner(this) {
+            @Override
+            public boolean performClick() {
+                alert()
+                    .setTitle("选择条件")
+                    .setSingleChoiceItems(values, getSelectedItemPosition(),
+                        (d, n) -> {
+                            setSelection(n);
+                            d.dismiss();
+                        })
+                    .setNegativeButton("取消", null)
+                    .show();
+                return true;
+            }
+        };
+        ArrayAdapter<String> a =
+            new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, values);
+        a.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinner.setAdapter(a);
+        spinner.setSelection(initial);
+        spinner.setMinimumHeight(dp(44));
+        return spinner;
+    }
+    private void filterDialog() {
+        LinearLayout box = col();
+        box.setPadding(dp(16), dp(16), dp(16), dp(10));
+        box.addView(text("显示筛选", 18, TEXT));
+        Spinner proto = spinner(new String[] {"全部协议", "TCP", "UDP", "ICMP", "ICMPv6"},
+            packetFilter.protocol == 6        ? 1
+                : packetFilter.protocol == 17 ? 2
+                : packetFilter.protocol == 1  ? 3
+                : packetFilter.protocol == 58 ? 4
+                                              : 0);
+        Spinner direction = spinner(new String[] {"全部方向", "发出", "收到", "方向未知"},
+            packetFilter.direction < 0        ? 0
+                : packetFilter.direction == 1 ? 1
+                : packetFilter.direction == 0 ? 2
+                                              : 3);
+        Spinner readable = spinner(
+            new String[] {"全部内容", "可读文本载荷", "非文本或无载荷"}, packetFilter.readable);
+        box.addView(proto);
+        box.addView(direction);
+        box.addView(readable);
+        LinearLayout sizes = row();
+        EditText min = input("最小字节"), max = input("最大字节");
+        min.setInputType(2);
+        max.setInputType(2);
+        if (packetFilter.minBytes > 0)
+            min.setText("" + packetFilter.minBytes);
+        if (packetFilter.maxBytes < Integer.MAX_VALUE)
+            max.setText("" + packetFilter.maxBytes);
+        sizes.addView(min, new LinearLayout.LayoutParams(0, -2, 1));
+        sizes.addView(max, new LinearLayout.LayoutParams(0, -2, 1));
+        box.addView(sizes);
+        Dialog d = dialog("", box);
+        fullButton(box, "应用筛选", true, () -> {
+            try {
+                int lo = min.getText().length() == 0 ? 0
+                                                     : Integer.parseInt(min.getText().toString()),
+                    hi = max.getText().length() == 0 ? Integer.MAX_VALUE
+                                                     : Integer.parseInt(max.getText().toString());
+                if (lo > hi)
+                    throw new NumberFormatException();
+                packetFilter.protocol =
+                    new int[] {0, 6, 17, 1, 58}[proto.getSelectedItemPosition()];
+                packetFilter.direction =
+                    new int[] {-1, 1, 0, 255}[direction.getSelectedItemPosition()];
+                packetFilter.readable = readable.getSelectedItemPosition();
+                packetFilter.minBytes = lo;
+                packetFilter.maxBytes = hi;
+                selected.clear();
+                liveRefresh = false;
+                d.dismiss();
+                loadPackets(true);
+            } catch (Exception e) {
+                min.setError("请填写有效的字节范围");
+            }
+        });
+        fullButton(box, "重置筛选与搜索", false, () -> {
+            packetFilter = new PacketFilter();
+            selected.clear();
+            d.dismiss();
+            loadPackets(true);
+        });
+        sizeDialog(d, false);
+    }
+    private void compareSelected() {
+        if (selected.size() != 2)
+            return;
+        List<PacketStore.Record> pair = new ArrayList<>(selected.values());
+        pair.sort(Comparator.comparingLong(r -> r.id));
+        LinearLayout box = col();
+        box.setPadding(dp(12), dp(10), dp(12), dp(8));
+        LinearLayout head = row();
+        TextView title = text("载荷比较  #" + pair.get(0).id + " → #" + pair.get(1).id, 16, TEXT);
+        head.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        box.addView(head);
+        TextView data = text("读取中…", 12, TEXT);
+        data.setTypeface(Typeface.MONOSPACE);
+        data.setTextIsSelectable(true);
+        ScrollView sc = scroll();
+        sc.addView(data);
         box.addView(sc, new LinearLayout.LayoutParams(-1, 0, 1));
         Dialog d = dialog("", box);
-        fullButton(box, "关闭", false, () -> d.dismiss());
+        tool(head, "close", "关闭", () -> d.dismiss());
+        sizeDialog(d, true);
+        io.execute(() -> {
+            try {
+                byte[] a = PacketStore.payload(pair.get(0), PacketStore.bytes(pair.get(0))),
+                       b = PacketStore.payload(pair.get(1), PacketStore.bytes(pair.get(1)));
+                String diff = PacketStore.diff(a, b);
+                post(() -> {
+                    if (d.isShowing())
+                        data.setText(diff);
+                });
+            } catch (Exception e) {
+                post(() -> data.setText("比较失败：" + e.getMessage()));
+            }
+        });
+    }
+    private void detail(PacketStore.Record r) {
+        liveRefresh = false;
+        LinearLayout box = col();
+        box.setPadding(dp(10), dp(4), dp(10), dp(6));
+        LinearLayout head = row();
+        TextView title =
+            text("#" + r.id + " · " + r.protocol() + " · " + r.time() + " · " + r.caplen + " B", 13,
+                TEXT);
+        title.setSingleLine();
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        head.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        box.addView(head);
+        TextView route = text(r.route(), 11, MUTED);
+        route.setSingleLine();
+        route.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        box.addView(route);
+        LinearLayout actions = row();
+        box.addView(actions);
+        ScrollView sc = scroll();
+        TextView content = text("读取中…", 12, TEXT);
+        content.setTextIsSelectable(true);
+        content.setTypeface(Typeface.MONOSPACE);
+        sc.addView(content);
+        HexDumpView hex = new HexDumpView(this);
+        box.addView(sc, new LinearLayout.LayoutParams(-1, 0, 1));
+        Dialog d = dialog("", box);
+        tool(head, "close", "关闭详情", () -> d.dismiss());
         sizeDialog(d, true);
         io.execute(() -> {
             try {
@@ -972,38 +1639,37 @@ final class WorkspaceUi extends ContextThemeWrapper {
                 post(() -> {
                     if (!d.isShowing())
                         return;
-                    content.setText(readable);
                     hex.setBytes(raw);
-                    for (String name : new String[] {"可读内容", "原始记录", "标记", "比较"}) {
-                        Button b = button(name, false, () -> {
-                            if (name.equals("可读内容")) {
-                                sc.removeAllViews();
-                                sc.addView(content);
-                                content.setText(readable);
-                                sc.scrollTo(0, 0);
-                            } else if (name.equals("原始记录")) {
-                                sc.removeAllViews();
-                                sc.addView(hex);
-                                sc.scrollTo(0, 0);
-                            } else if (name.equals("标记")) {
-                                pinned = r;
-                                pinnedPayload = payload.clone();
-                                toast("已标记 #" + r.id + "，选择另一条记录后可比较载荷");
-                            } else {
-                                if (pinnedPayload == null) {
-                                    toast("请先标记一条记录");
-                                    return;
-                                }
-                                sc.removeAllViews();
-                                sc.addView(content);
-                                content.setText("A：#" + pinned.id + "   B：#" + r.id + "\n"
-                                    + PacketStore.diff(pinnedPayload, payload));
-                                sc.scrollTo(0, 0);
+                    sc.removeAllViews();
+                    sc.addView(hex);
+                    for (String label : new String[] {"原始字节", "可读内容", "网络字段", "保存"}) {
+                        Button b = compactButton(label, () -> {
+                            if (label.equals("保存")) {
+                                changeNotes(Collections.singleton(r.id), false, null);
+                                return;
                             }
+                            sc.removeAllViews();
+                            if (label.equals("原始字节"))
+                                sc.addView(hex);
+                            else {
+                                sc.addView(content);
+                                content.setText(label.equals("可读内容") ? readable
+                                                                         : r.protocol() + " · IPv"
+                                            + r.version + "\n" + r.route() + "\n方向："
+                                            + (r.dir == 1        ? "发出"
+                                                    : r.dir == 0 ? "收到"
+                                                                 : "未知")
+                                            + "\n接口索引：" + r.iface + "\n捕获 / 原始："
+                                            + r.caplen + " / " + r.wirelen + " B\n载荷："
+                                            + r.payloadLen + " B\nUID：" + r.uid + "\n归属："
+                                            + ((r.flags & 8) != 0 ? "未知（独立保留）"
+                                                                  : "会话抓取范围")
+                                            + "\n分片：" + ((r.flags & 1) != 0)
+                                            + "\n解析失败标记：" + ((r.flags & 4) != 0));
+                            }
+                            sc.scrollTo(0, 0);
                         });
-                        b.setTextSize(11);
-                        b.setPadding(dp(2), 0, dp(2), 0);
-                        actions.addView(b, new LinearLayout.LayoutParams(0, dp(42), 1));
+                        actions.addView(b, new LinearLayout.LayoutParams(0, dp(36), 1));
                     }
                 });
             } catch (Exception e) {
@@ -1011,57 +1677,153 @@ final class WorkspaceUi extends ContextThemeWrapper {
             }
         });
     }
-    // 为什么：清空只影响当前视图，原始记录和历史导出不能随预览一起丢失。
     private void dataMenu(View anchor) {
+        String[] names = {"返回最新记录", "停止跟随最新", "查看归属未知 / 返回主会话", "完整性报告",
+            "导出当前会话"};
+        names[1] = liveRefresh ? "停止跟随最新" : "跟随最新记录";
         alert()
             .setTitle("数据操作")
-            .setItems(new String[] {"连接概览", "清空当前视图", "导出会话"},
-                (d, option) -> {
-                    if (option == 0)
-                        flowDialog();
-                    else if (selectedSession == null)
-                        toast("请先选择会话");
-                    else if (option == 2)
-                        exportDialog(selectedSession);
-                    else {
-                        clearedSession = selectedSession;
-                        clearedAfterSequence = PacketStore.count(selectedSession);
+            .setItems(names,
+                (d, n) -> {
+                    if (n == 0) {
                         loadPackets(true);
-                        toast("视图已清空，原始记录保留；点击刷新可恢复查看全部");
+                        return;
                     }
+                    if (n == 1) {
+                        liveRefresh = !liveRefresh;
+                        if (liveRefresh) {
+                            dataView = 0;
+                            selected.clear();
+                            loadPackets(true);
+                        }
+                        toast(liveRefresh ? "正在跟随最新" : "保持当前浏览位置");
+                        return;
+                    }
+                    if (selectedSession == null) {
+                        toast("请先选择会话");
+                        return;
+                    }
+                    if (n == 2) {
+                        File candidate = selectedSession.getName().equals("unattributed")
+                            ? selectedSession.getParentFile()
+                            : new File(selectedSession, "unattributed");
+                        if (!new File(candidate, "packets.idx").isFile()) {
+                            toast("此会话没有独立保留的未知归属包");
+                            return;
+                        }
+                        selectedSession = candidate;
+                        showTab(1);
+                    } else if (n == 3)
+                        reportDialog(selectedSession);
+                    else
+                        exportDialog(selectedSession);
                 })
             .setNegativeButton("取消", null)
             .show();
     }
     private void flowDialog() {
         if (selectedSession == null) {
-            toast("请先选择一个会话");
+            toast("请先选择会话");
             return;
         }
+        alert()
+            .setTitle("组织数据")
+            .setItems(
+                new String[] {"通信连接", "协议分布", "包长度分布"}, (d, kind) -> groupDialog(kind))
+            .setNegativeButton("取消", null)
+            .show();
+    }
+    private void groupDialog(int kind) {
+        File f = selectedSession;
         LinearLayout box = col();
-        box.setPadding(dp(18), dp(18), dp(18), dp(14));
-        box.addView(text("连接概览", 21, TEXT));
-        gap(box, 6);
-        TextView hint = text("按通信两端归类，计算中…", 12, MUTED);
+        box.setPadding(dp(12), dp(8), dp(12), dp(6));
+        LinearLayout head = row();
+        TextView title = text(new String[] {"通信连接", "协议分布", "包长度分布"}[kind], 17, TEXT);
+        head.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        box.addView(head);
+        TextView hint = text("正在汇总已捕获记录…", 11, MUTED);
         box.addView(hint);
         ListView list = new ListView(this);
         box.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
         Dialog d = dialog("", box);
-        fullButton(box, "关闭", false, () -> d.dismiss());
+        tool(head, "close", "关闭分组", () -> d.dismiss());
         sizeDialog(d, true);
-        File f = selectedSession;
         io.execute(() -> {
             try {
-                List<String> items = PacketStore.flows(
-                    f, () -> !d.isShowing() || Thread.currentThread().isInterrupted());
+                List<PacketStore.Group> groups = PacketStore.groups(
+                    f, kind, () -> !d.isShowing() || Thread.currentThread().isInterrupted());
+                List<String> labels = new ArrayList<>();
+                for (PacketStore.Group g : groups)
+                    labels.add(g.label + "\n" + g.count + " 包 · "
+                        + PacketStore.formatBytes(g.bytes) + " · ↑ " + g.up + " ↓ " + g.down + " ? "
+                        + g.unknown);
                 post(() -> {
                     if (!d.isShowing())
                         return;
-                    hint.setText(items.size() + " 条连接 · 仅为本次已捕获数据的汇总");
-                    list.setAdapter(simpleAdapter(items));
+                    hint.setText(groups.size() + " 个分组 · 点击查看关联记录");
+                    list.setAdapter(simpleAdapter(labels));
+                    list.setOnItemClickListener((a, v, p, id) -> {
+                        PacketStore.Group g = groups.get(p);
+                        if (g.key.isEmpty())
+                            return;
+                        relatedCount = g.count;
+                        relatedKey = g.key;
+                        relatedLabel = g.label;
+                        dataView = 2;
+                        selected.clear();
+                        liveRefresh = false;
+                        d.dismiss();
+                        loadPackets(true);
+                    });
+                    list.setOnItemLongClickListener((a, v, p, id) -> {
+                        PacketStore.Group g = groups.get(p);
+                        getSystemService(android.content.ClipboardManager.class)
+                            .setPrimaryClip(ClipData.newPlainText("数据分组", g.label));
+                        toast("已复制分组信息");
+                        return true;
+                    });
                 });
             } catch (Exception e) {
                 post(() -> hint.setText("读取失败：" + e.getMessage()));
+            }
+        });
+    }
+    private void reportDialog(File f) {
+        if (f == null) {
+            toast("请先选择会话");
+            return;
+        }
+        if (CaptureService.active
+            && (f.equals(CaptureService.activeSession)
+                || f.getParentFile().equals(CaptureService.activeSession))) {
+            toast("请先停止并保存，再检查完整性");
+            return;
+        }
+        LinearLayout box = col();
+        box.setPadding(dp(12), dp(8), dp(12), dp(6));
+        LinearLayout head = row();
+        head.addView(text("完整性报告", 17, TEXT), new LinearLayout.LayoutParams(0, -2, 1));
+        box.addView(head);
+        ScrollView sc = scroll();
+        TextView value = text("检查中…", 13, TEXT);
+        value.setTextIsSelectable(true);
+        sc.addView(value);
+        box.addView(sc, new LinearLayout.LayoutParams(-1, 0, 1));
+        Dialog d = dialog("", box);
+        tool(head, "close", "关闭报告", () -> d.dismiss());
+        sizeDialog(d, true);
+        io.execute(() -> {
+            try {
+                File report = new File(f, "integrity.txt");
+                if (!report.isFile())
+                    IntegrityReport.generate(f, PacketStore.manifest(f), () -> !d.isShowing());
+                String reportText = PacketStore.readText(report);
+                post(() -> {
+                    if (d.isShowing())
+                        value.setText(reportText);
+                });
+            } catch (Exception e) {
+                post(() -> value.setText("检查失败：" + e.getMessage()));
             }
         });
     }
@@ -1149,7 +1911,9 @@ final class WorkspaceUi extends ContextThemeWrapper {
         });
     }
     private void exportDialog(File session) {
-        if (CaptureService.active && session.equals(CaptureService.activeSession)) {
+        if (CaptureService.active
+            && (session.equals(CaptureService.activeSession)
+                || session.getParentFile().equals(CaptureService.activeSession))) {
             toast("请先停止并保存，再导出完整会话");
             return;
         }
@@ -1309,6 +2073,33 @@ final class WorkspaceUi extends ContextThemeWrapper {
         LinearLayout advanced = card(page, "高级抓取设置");
         gap(advanced, 10);
         advanced.addView(text("保存的协议范围", 14, TEXT));
+        fullButton(advanced, "抓取范围：" + (prefs.getInt("uid", -1) < 0 ? "整机 IP" : "选中应用"),
+            false, () -> {
+                if (CaptureService.active) {
+                    toast("请先停止后切换抓取范围");
+                    return;
+                }
+                alert()
+                    .setTitle("抓取范围")
+                    .setItems(new String[] {"选择应用进程", "整机 IP 流量"},
+                        (d, n) -> {
+                            if (n == 0)
+                                processDialog();
+                            else {
+                                prefs.edit()
+                                    .putInt("uid", -1)
+                                    .putInt("pid", -1)
+                                    .remove("rss")
+                                    .remove("package")
+                                    .putString("label", "整机流量")
+                                    .putBoolean("scopeChosen", true)
+                                    .apply();
+                                showTab(3);
+                            }
+                        })
+                    .setNegativeButton("取消", null)
+                    .show();
+            });
         int current = prefs.getInt("protocol", 0);
         Button protocol = button(current == 6 ? "仅 TCP"
                 : current == 17               ? "仅 UDP"
@@ -1327,6 +2118,16 @@ final class WorkspaceUi extends ContextThemeWrapper {
                 .show());
         fullButton(advanced, "选择接口：" + prefs.getString("ifaceName", "所有接口"), false,
             () -> interfaces());
+        Switch unknown = new Switch(this);
+        unknown.setText("研究模式：独立保留归属未知包");
+        unknown.setTextColor(TEXT);
+        unknown.setChecked(prefs.getBoolean("keepUnknown", false));
+        unknown.setOnCheckedChangeListener((b, v) -> {
+            prefs.edit().putBoolean("keepUnknown", v).apply();
+            toast(v ? "下次抓包独立保留未知包，可能含其他应用流量" : "下次抓包排除未知归属包");
+        });
+        gap(advanced, 10);
+        advanced.addView(unknown);
         LinearLayout appearance = card(page, "界面与交互");
         TextView alphaLabel = text("背景不透明度 " + prefs.getInt("opacity", 86) + "%", 14, TEXT);
         appearance.addView(alphaLabel);
@@ -1335,10 +2136,8 @@ final class WorkspaceUi extends ContextThemeWrapper {
         opacity.setProgress(prefs.getInt("opacity", 86) - 45);
         appearance.addView(opacity, new LinearLayout.LayoutParams(-1, dp(44)));
         opacity.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            public void onStartTrackingTouch(SeekBar b) {
-            }
-            public void onStopTrackingTouch(SeekBar b) {
-            }
+            public void onStartTrackingTouch(SeekBar b) {}
+            public void onStopTrackingTouch(SeekBar b) {}
             public void onProgressChanged(SeekBar b, int value, boolean user) {
                 if (!user)
                     return;
@@ -1456,8 +2255,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
                     dirs.clear();
                     dirs.addAll(found);
                     List<String> labels = new ArrayList<>();
-                    for (File f : dirs)
-                        labels.add((f.isDirectory() ? "▸  " : "▤  ") + f.getName());
+                    for (File f : dirs) labels.add((f.isDirectory() ? "▸  " : "▤  ") + f.getName());
                     list.setAdapter(simpleAdapter(labels));
                     if (children == null)
                         toast("当前目录不可读取，请授权内部存储访问或选择应用目录");

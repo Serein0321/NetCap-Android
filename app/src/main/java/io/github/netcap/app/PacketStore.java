@@ -1,7 +1,6 @@
 package io.github.netcap.app;
 
 import android.content.Context;
-import org.json.*;
 import java.io.*;
 import java.net.InetAddress;
 import java.nio.*;
@@ -9,6 +8,7 @@ import java.nio.charset.*;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.zip.*;
+import org.json.*;
 
 /** 原始 PCAP 是事实来源，固定长度索引只用于定位；查询不把整个会话装入内存。 */
 final class PacketStore {
@@ -31,7 +31,7 @@ final class PacketStore {
                 .format(new Date(seconds * 1000 + micros / 1000));
         }
         String route() {
-            return src + (sp > 0 ? ":" + sp : "") + "  →  " + dst + (dp > 0 ? ":" + dp : "");
+            return PacketFilter.endpoint(src, sp) + "  →  " + PacketFilter.endpoint(dst, dp);
         }
         String summary() {
             return protocol() + "  ·  "
@@ -83,14 +83,38 @@ final class PacketStore {
             throw new IOException("索引记录范围不合法");
         return r;
     }
-    static byte[] bytes(Record r) throws IOException {
-        try (RandomAccessFile f = new RandomAccessFile(segment(r.session, r.segment), "r")) {
-            if (r.offset > f.length() || r.caplen > f.length() - r.offset)
+    static final class RawReader implements AutoCloseable {
+        private RandomAccessFile input;
+        private int segment = -1;
+        private final File session;
+        RawReader(File session) {
+            this.session = session;
+        }
+        byte[] read(Record r) throws IOException {
+            if (!r.session.equals(session))
+                throw new IOException("原包会话不一致");
+            if (input == null || segment != r.segment) {
+                close();
+                input = new RandomAccessFile(PacketStore.segment(session, r.segment), "r");
+                segment = r.segment;
+            }
+            if (r.offset > input.length() || r.caplen > input.length() - r.offset)
                 throw new IOException("原始记录尚未刷新，或文件不完整");
             byte[] p = new byte[r.caplen];
-            f.seek(r.offset);
-            f.readFully(p);
+            input.seek(r.offset);
+            input.readFully(p);
             return p;
+        }
+        public void close() throws IOException {
+            if (input != null) {
+                input.close();
+                input = null;
+            }
+        }
+    }
+    static byte[] bytes(Record r) throws IOException {
+        try (RawReader reader = new RawReader(r.session)) {
+            return reader.read(r);
         }
     }
     static void addresses(Record r, byte[] p) {
@@ -118,12 +142,33 @@ final class PacketStore {
     }
     static Query query(File session, long start, boolean newest, String text, int protocol,
         Cancel cancel, long afterSequence) throws IOException {
+        PacketFilter f = new PacketFilter();
+        f.legacyHex = true;
+        f.text = text == null ? "" : text;
+        f.protocol = protocol;
+        return query(session, start, newest, f, cancel, afterSequence, 80, Long.MAX_VALUE);
+    }
+    static Query query(File session, long start, PacketFilter filter, Cancel cancel)
+        throws IOException {
+        return query(session, start, true, filter, cancel, 0, 128, 4096);
+    }
+    static Query newer(File session, long start, PacketFilter filter, Cancel cancel)
+        throws IOException {
+        return query(session, start, false, filter, cancel, 0, 128, 4096);
+    }
+    private static Query query(File session, long start, boolean newest, PacketFilter filter,
+        Cancel cancel, long afterSequence, int limit, long scanLimit) throws IOException {
         Query q = new Query();
         q.total = count(session);
+        if (q.total == 0) {
+            q.next = -1;
+            return q;
+        }
         long pos = start < 0 ? (newest ? q.total - 1 : 0) : start;
-        String term = text == null ? "" : text.trim();
+        String term = filter.text.trim();
+        NavigableSet<Long> saved = filter.ids == null ? null : new TreeSet<>(filter.ids);
         byte[] needle = null;
-        if (term.toLowerCase(Locale.ROOT).startsWith("hex:")) {
+        if (filter.legacyHex && term.toLowerCase(Locale.ROOT).startsWith("hex:")) {
             String h = term.substring(4).replaceAll("\\s+", "");
             if (h.isEmpty() || h.length() % 2 != 0 || !h.matches("[0-9a-fA-F]*"))
                 throw new IOException("hex: 后请输入成对的十六进制字节");
@@ -131,12 +176,25 @@ final class PacketStore {
             for (int i = 0; i < needle.length; i++)
                 needle[i] = (byte) Integer.parseInt(h.substring(i * 2, i * 2 + 2), 16);
         }
-        try (RandomAccessFile idx = new RandomAccessFile(new File(session, "packets.idx"), "r")) {
+        try (RandomAccessFile idx = new RandomAccessFile(new File(session, "packets.idx"), "r");
+            RawReader reader = new RawReader(session)) {
             for (; pos >= 0 && pos < q.total; pos += newest ? -1 : 1) {
+                if (saved != null) {
+                    Long next = newest ? saved.floor(pos + 1) : saved.ceiling(pos + 1);
+                    if (next == null) {
+                        pos = newest ? -1 : q.total;
+                        break;
+                    }
+                    pos = next - 1;
+                    if (pos < 0 || pos >= q.total)
+                        break;
+                }
                 if (cancel.isCancelled()) {
                     q.cancelled = true;
                     break;
                 }
+                if (q.scanned >= scanLimit)
+                    break;
                 q.scanned++;
                 Record r = row(idx, session, pos);
                 if (r.id <= afterSequence) {
@@ -146,11 +204,11 @@ final class PacketStore {
                     } else
                         continue;
                 }
-                if (protocol != 0 && r.proto != protocol)
+                if (!filter.metadata(r))
                     continue;
                 byte[] raw;
                 try {
-                    raw = bytes(r);
+                    raw = reader.read(r);
                 } catch (EOFException e) {
                     continue;
                 } catch (IOException e) {
@@ -159,6 +217,8 @@ final class PacketStore {
                     throw e;
                 }
                 addresses(r, raw);
+                if (!filter.content(r, raw))
+                    continue;
                 boolean match = term.isEmpty();
                 if (needle != null)
                     match = contains(raw, needle);
@@ -169,7 +229,7 @@ final class PacketStore {
                                 .contains(term.toLowerCase(Locale.ROOT));
                 if (match) {
                     q.records.add(r);
-                    if (q.records.size() >= 80) {
+                    if (q.records.size() >= limit) {
                         pos += newest ? -1 : 1;
                         break;
                     }
@@ -178,6 +238,58 @@ final class PacketStore {
         }
         q.next = pos;
         return q;
+    }
+    static final class Group {
+        String key, label;
+        long count, bytes, up, down, unknown;
+    }
+    static List<Group> groups(File session, int kind, Cancel cancel) throws IOException {
+        Map<String, Group> map = new HashMap<>();
+        long overflow = 0;
+        try (RandomAccessFile idx = new RandomAccessFile(new File(session, "packets.idx"), "r");
+            RawReader reader = new RawReader(session)) {
+            long n = count(session);
+            for (long i = 0; i < n; i++) {
+                if (cancel.isCancelled())
+                    return Collections.emptyList();
+                Record r = row(idx, session, i);
+                if (kind == 0)
+                    addresses(r, reader.read(r));
+                String key = PacketFilter.group(r, kind);
+                Group g = map.get(key);
+                if (g == null) {
+                    if (map.size() >= 2000) {
+                        overflow++;
+                        continue;
+                    }
+                    g = new Group();
+                    g.key = key;
+                    g.label = kind == 0
+                        ? r.protocol() + "  " + key.substring(key.indexOf(':', 5) + 1)
+                        : kind == 1 ? r.protocol()
+                                    : PacketFilter.sizeLabel(PacketFilter.sizeBucket(r.caplen));
+                    map.put(key, g);
+                }
+                g.count++;
+                g.bytes += r.caplen;
+                if (r.dir == 1)
+                    g.up++;
+                else if (r.dir == 0)
+                    g.down++;
+                else
+                    g.unknown++;
+            }
+        }
+        List<Group> out = new ArrayList<>(map.values());
+        out.sort((a, b) -> Long.compare(b.bytes, a.bytes));
+        if (overflow > 0) {
+            Group g = new Group();
+            g.key = "";
+            g.count = overflow;
+            g.label = "其他连接（概览上限 2000，原始包保留）";
+            out.add(g);
+        }
+        return out;
     }
     static boolean contains(byte[] data, byte[] needle) {
     outer:
@@ -277,13 +389,14 @@ final class PacketStore {
     static List<String> flows(File session, Cancel cancel) throws IOException {
         Map<String, long[]> map = new LinkedHashMap<>();
         long other = 0;
-        try (RandomAccessFile idx = new RandomAccessFile(new File(session, "packets.idx"), "r")) {
+        try (RandomAccessFile idx = new RandomAccessFile(new File(session, "packets.idx"), "r");
+            RawReader reader = new RawReader(session)) {
             long n = count(session);
             for (long i = 0; i < n; i++) {
                 if (cancel.isCancelled())
                     break;
                 Record r = row(idx, session, i);
-                byte[] raw = bytes(r);
+                byte[] raw = reader.read(r);
                 addresses(r, raw);
                 String a = r.src + ":" + r.sp, b = r.dst + ":" + r.dp;
                 String key =
@@ -326,8 +439,12 @@ final class PacketStore {
             f.write(obj.toString().getBytes(StandardCharsets.UTF_8));
             f.getFD().sync();
         }
-        if (!tmp.renameTo(new File(session, "session.json")))
-            throw new IOException("保存会话状态失败");
+        replace(tmp, new File(session, "session.json"));
+    }
+    static void replace(File tmp, File target) throws IOException {
+        java.nio.file.Files.move(tmp.toPath(), target.toPath(),
+            java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
     }
     static String readText(File f) throws IOException {
         try (InputStream in = new FileInputStream(f);
@@ -343,9 +460,10 @@ final class PacketStore {
         }
     }
     static String formatBytes(long n) {
-        return n < 1024   ? n + " B"
-            : n < 1048576 ? String.format(Locale.ROOT, "%.1f KB", n / 1024.0)
-                          : String.format(Locale.ROOT, "%.2f MB", n / 1048576.0);
+        return n < 1024       ? n + " B"
+            : n < 1048576     ? String.format(Locale.ROOT, "%.1f KB", n / 1024.0)
+            : n < 1073741824L ? String.format(Locale.ROOT, "%.2f MB", n / 1048576.0)
+                              : String.format(Locale.ROOT, "%.2f GB", n / 1073741824.0);
     }
     static List<File> history(Context c, File configured) {
         Set<String> seen = new HashSet<>();
@@ -370,20 +488,34 @@ final class PacketStore {
         result.sort((a, b) -> Long.compare(b.lastModified(), a.lastModified()));
         return result;
     }
+    private static void zipTree(File root, File folder, ZipOutputStream zip) throws IOException {
+        File[] files = folder.listFiles();
+        if (files == null)
+            return;
+        for (File f : files) {
+            if (java.nio.file.Files.isSymbolicLink(f.toPath()))
+                continue;
+            if (!f.getCanonicalPath().startsWith(root.getCanonicalPath() + File.separator))
+                continue;
+            if (f.isDirectory()) {
+                zipTree(root, f, zip);
+                continue;
+            }
+            if (f.getName().endsWith(".tmp") || f.getName().endsWith(".partial"))
+                continue;
+            zip.putNextEntry(
+                new ZipEntry(root.toPath().relativize(f.toPath()).toString().replace('\\', '/')));
+            try (InputStream in = new FileInputStream(f)) {
+                copy(in, zip);
+            }
+            zip.closeEntry();
+        }
+    }
     static void export(File session, OutputStream out, String type)
         throws IOException { // 为什么：导出从磁盘流式读取，不把长会话或大文件整体放进内存。
         if (type.equals("zip")) {
             ZipOutputStream z = new ZipOutputStream(out);
-            File[] files = session.listFiles();
-            if (files != null)
-                for (File f : files)
-                    if (f.isFile() && !f.getName().endsWith(".tmp")) {
-                        z.putNextEntry(new ZipEntry(f.getName()));
-                        try (InputStream in = new FileInputStream(f)) {
-                            copy(in, z);
-                        }
-                        z.closeEntry();
-                    }
+            zipTree(session, session, z);
             z.finish();
             return;
         }
@@ -396,8 +528,7 @@ final class PacketStore {
                         segments.add(f);
             segments.sort(Comparator.comparing(File::getName));
             boolean first = true;
-            for (File f : segments)
-                try (InputStream in = new FileInputStream(f)) {
+            for (File f : segments) try (InputStream in = new FileInputStream(f)) {
                     byte[] header = new byte[24];
                     if (in.read(header) != 24)
                         throw new IOException("PCAP 文件头不完整");
@@ -409,11 +540,12 @@ final class PacketStore {
                 }
             return;
         }
-        try (RandomAccessFile idx = new RandomAccessFile(new File(session, "packets.idx"), "r")) {
+        try (RandomAccessFile idx = new RandomAccessFile(new File(session, "packets.idx"), "r");
+            RawReader reader = new RawReader(session)) {
             long n = count(session);
             for (long i = 0; i < n; i++) {
                 Record r = row(idx, session, i);
-                byte[] raw = bytes(r);
+                byte[] raw = reader.read(r);
                 addresses(r, raw);
                 String text;
                 if (type.equals("jsonl")) {
@@ -428,6 +560,9 @@ final class PacketStore {
                             .put("destinationPort", r.dp)
                             .put("protocol", r.proto)
                             .put("interface", r.iface)
+                            .put("uid", r.uid)
+                            .put("attributionUnknown", (r.flags & 8) != 0)
+                            .put("parseFailed", (r.flags & 4) != 0)
                             .put("direction",
                                 r.dir == 1       ? "out"
                                     : r.dir == 0 ? "in"
@@ -458,8 +593,7 @@ final class PacketStore {
     static void copy(InputStream in, OutputStream out) throws IOException {
         byte[] b = new byte[65536];
         int n;
-        while ((n = in.read(b)) != -1)
-            out.write(b, 0, n);
+        while ((n = in.read(b)) != -1) out.write(b, 0, n);
     }
     static void writeRow(OutputStream out, Record r) throws IOException {
         ByteBuffer b = ByteBuffer.allocate(64).order(ByteOrder.LITTLE_ENDIAN);
