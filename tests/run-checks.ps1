@@ -11,10 +11,12 @@ if((Get-FileHash -LiteralPath $dependency).Hash -ne '3EA61B2A06E31EDF1C91134FE91
 $platform=Join-Path $SdkPath 'platforms\android-36\android.jar'
 $classes=Join-Path $destination 'classes'
 $source=Join-Path $project 'app\src\main\java\io\github\netcap\app'
-$files=@('PacketStore.java','PacketFilter.java','PacketNotes.java','IntegrityReport.java')|ForEach-Object{Join-Path $source $_}
-& "$JdkPath\bin\javac.exe" -encoding UTF-8 -cp "$dependency;$platform" -d $classes @files (Join-Path $PSScriptRoot 'WorkbenchChecks.java')
+$files=@('PacketStore.java','PacketFilter.java','PacketNotes.java','IntegrityReport.java','SessionLibrary.java','ModalGeometry.java')|ForEach-Object{Join-Path $source $_}
+& "$JdkPath\bin\javac.exe" -encoding UTF-8 -cp "$dependency;$platform" -d $classes @files (Join-Path $PSScriptRoot 'WorkbenchChecks.java') (Join-Path $PSScriptRoot 'LibraryChecks.java')
 if($LASTEXITCODE-ne 0){throw '主机测试编译失败'}
 $run=Join-Path $destination ('run-'+[DateTimeOffset]::Now.ToUnixTimeMilliseconds())
 & "$JdkPath\bin\java.exe" '-Dfile.encoding=UTF-8' -cp "$classes;$dependency;$platform" io.github.netcap.app.WorkbenchChecks $run
 if($LASTEXITCODE-ne 0){throw '数据回归失败'}
+& "$JdkPath\bin\java.exe" '-Dfile.encoding=UTF-8' -cp "$classes;$dependency;$platform" io.github.netcap.app.LibraryChecks ($run+'-library')
+if($LASTEXITCODE-ne 0){throw '会话管理/窗口边界回归失败'}
 if($Traffic){& python (Join-Path $PSScriptRoot 'probe_checks.py');if($LASTEXITCODE-ne 0){throw '本机通信回归失败'}}

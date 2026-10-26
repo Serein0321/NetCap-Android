@@ -19,6 +19,19 @@ final class ProcessCatalog implements AutoCloseable {
         context = c;
     }
     List<JSONObject> snapshot() throws Exception {
+        return request("list");
+    }
+    String probe() throws Exception {
+        List<JSONObject> result = request("probe");
+        StringBuilder text = new StringBuilder();
+        for (JSONObject j : result)
+            if (j.optString("event").equals("ready"))
+                text.append(j.optString("message"));
+        if (text.length() == 0)
+            throw new IOException("没有收到核心检查结果");
+        return text.toString();
+    }
+    private List<JSONObject> request(String command) throws Exception {
         if (closed)
             throw new IOException("查询已关闭");
         CaptureService.RootWindowLease lease = null;
@@ -67,7 +80,7 @@ final class ProcessCatalog implements AutoCloseable {
                 lease.close();
                 lease = null;
             }
-            out.write("list\n");
+            out.write(command + "\n");
             out.flush();
             List<JSONObject> data = new ArrayList<>();
             String line;
@@ -77,7 +90,7 @@ final class ProcessCatalog implements AutoCloseable {
                     return data;
                 if (j.optString("event").equals("error"))
                     throw new IOException(j.optString("message"));
-                if (j.has("pid"))
+                if (j.has("pid") || j.optString("event").equals("ready"))
                     data.add(j);
                 if (data.size() > 20000)
                     throw new IOException("进程数超出范围");

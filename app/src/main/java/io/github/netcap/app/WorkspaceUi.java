@@ -76,6 +76,14 @@ final class WorkspaceUi extends ContextThemeWrapper {
     private final List<PacketStore.Record> records = new ArrayList<>();
     private final List<Dialog> openDialogs = new ArrayList<>();
     private final Set<Dialog> fixedDialogs = new HashSet<>();
+    private final Map<Dialog, Integer> editorHeights = new HashMap<>();
+    private final Set<Dialog> fitting = new HashSet<>();
+    private final Set<File> historySelection = new LinkedHashSet<>();
+    private boolean historyManaging;
+    private String historyGroup = "";
+    private int historyEpoch;
+    private volatile int relatedEpoch;
+    private List<SessionLibrary.Entry> libraryEntries = new ArrayList<>();
     private BaseAdapter packetAdapter;
     private long lastRefresh = 0;
     private final Runnable tick = new Runnable() {
@@ -139,6 +147,8 @@ final class WorkspaceUi extends ContextThemeWrapper {
         rootHidden.clear();
         visible = false;
         generation++;
+        relatedEpoch++;
+        historyEpoch++;
         queryBusy = false;
         ui.removeCallbacks(tick);
         getWindow().getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(workspaceBack);
@@ -225,6 +235,16 @@ final class WorkspaceUi extends ContextThemeWrapper {
                                   : WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
             | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
         if (modal) {
+            w.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
+            w.setDecorFitsSystemWindows(false);
+            WindowManager.LayoutParams frame = w.getAttributes();
+            frame.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+            frame.setFitInsetsTypes(0);
+            frame.gravity = Gravity.TOP | Gravity.LEFT;
+            frame.x = frame.y = 0;
+            w.setAttributes(frame);
+            w.setWindowAnimations(0);
             w.setBackgroundDrawable(background(0xff282a35, 22));
             w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
             w.setDimAmount(.45f);
@@ -680,6 +700,8 @@ final class WorkspaceUi extends ContextThemeWrapper {
             d.setOnDismissListener(x -> {
                 openDialogs.remove(d);
                 fixedDialogs.remove(d);
+                editorHeights.remove(d);
+                fitting.remove(d);
             });
             View decor = d.getWindow().getDecorView();
             android.window.OnBackInvokedCallback callback = () -> back(d, () -> {
@@ -688,6 +710,10 @@ final class WorkspaceUi extends ContextThemeWrapper {
             });
             decor.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
                 public void onViewAttachedToWindow(View v) {
+                    ui.post(() -> {
+                        if (d.isShowing())
+                            fitDialog(d);
+                    });
                     ui.post(() -> {
                         if (v.isAttachedToWindow())
                             d.getWindow()
@@ -703,23 +729,9 @@ final class WorkspaceUi extends ContextThemeWrapper {
                 }
             });
             decor.setOnApplyWindowInsetsListener((v, in) -> {
-                if (Boolean.TRUE.equals(v.getTag()) && d.isShowing()) {
-                    android.graphics.Rect bounds =
-                        getWindowManager().getCurrentWindowMetrics().getBounds();
-                    android.graphics.Insets bars = in.getInsets(
-                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
-                    int available = bounds.height() - bars.top
-                        - Math.max(bars.bottom, in.getInsets(WindowInsets.Type.ime()).bottom)
-                        - dp(20);
-                    int height =
-                        Math.max(dp(120), Math.min((int) (bounds.height() * .92), available));
-                    WindowManager.LayoutParams lp = d.getWindow().getAttributes();
-                    if (lp.height != height)
-                        d.getWindow().setLayout(
-                            Math.min(bounds.width() - dp(16), dp(landscape() ? 1100 : 620)),
-                            height);
-                }
-                return v.onApplyWindowInsets(in);
+                if (d.isShowing())
+                    fitDialog(d, in);
+                return in;
             });
             d.setOnKeyListener((dlg, key, event) -> {
                 if (key == KeyEvent.KEYCODE_BACK && event.getAction() == KeyEvent.ACTION_UP) {
@@ -753,15 +765,87 @@ final class WorkspaceUi extends ContextThemeWrapper {
         d.show();
         fitDialog(d);
     }
+    private void sizeEditor(Dialog d, int heightDp) {
+        editorHeights.put(d, dp(heightDp));
+        sizeDialog(d, false);
+    }
     private void fitDialog(Dialog d) {
-        Window w = d.getWindow();
-        if (w != null) {
-            android.graphics.Rect b = getWindowManager().getCurrentWindowMetrics().getBounds();
-            w.setLayout(Math.min(b.width() - dp(16), dp(landscape() ? 1100 : 620)),
-                Boolean.TRUE.equals(w.getDecorView().getTag())
-                    ? (int) (b.height() * .92)
-                    : WindowManager.LayoutParams.WRAP_CONTENT);
+        fitDialog(d, d.getWindow().getDecorView().getRootWindowInsets());
+    }
+    private void fitDialog(Dialog d, WindowInsets in) {
+        if (!d.isShowing() || fitting.contains(d))
+            return;
+        fitting.add(d);
+        try {
+            Window w = d.getWindow();
+            WindowMetrics metrics = getWindowManager().getCurrentWindowMetrics();
+            android.graphics.Rect bounds = metrics.getBounds();
+            android.graphics.Insets safe = metrics.getWindowInsets().getInsetsIgnoringVisibility(
+                WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            int ime = in == null ? 0 : in.getInsets(WindowInsets.Type.ime()).bottom;
+            int available =
+                Math.max(1, bounds.height() - safe.top - Math.max(safe.bottom, ime) - dp(16));
+            ModalGeometry limit =
+                ModalGeometry.fit(bounds.width(), bounds.height(), safe.left, safe.top, safe.right,
+                    safe.bottom, ime, dp(8), dp(landscape() ? 1000 : 620), available);
+            View title = w.getDecorView().findViewWithTag("modal-header");
+            if (title != null)
+                title.setVisibility(ime > 0 && available < dp(180) ? View.GONE : View.VISIBLE);
+            int wanted;
+            if (editorHeights.containsKey(d))
+                wanted = editorHeights.get(d);
+            else if (Boolean.TRUE.equals(w.getDecorView().getTag()))
+                wanted = available;
+            else {
+                w.getDecorView().measure(
+                    View.MeasureSpec.makeMeasureSpec(limit.width, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(available, View.MeasureSpec.AT_MOST));
+                wanted = Math.max(1, w.getDecorView().getMeasuredHeight());
+            }
+            ModalGeometry frame =
+                ModalGeometry.fit(bounds.width(), bounds.height(), safe.left, safe.top, safe.right,
+                    safe.bottom, ime, dp(8), dp(landscape() ? 1000 : 620), wanted);
+            WindowManager.LayoutParams lp = w.getAttributes();
+            if (lp.width != frame.width || lp.height != frame.height || lp.x != frame.x
+                || lp.y != frame.y) {
+                lp.width = frame.width;
+                lp.height = frame.height;
+                lp.x = frame.x;
+                lp.y = frame.y;
+                lp.gravity = Gravity.TOP | Gravity.LEFT;
+                w.setAttributes(lp);
+            }
+        } finally {
+            fitting.remove(d);
         }
+    }
+    private LinearLayout modalHead(LinearLayout box, String title) {
+        LinearLayout header = row();
+        header.setTag("modal-header");
+        TextView t = text(title, 17, TEXT);
+        t.setTypeface(null, Typeface.BOLD);
+        t.setSingleLine();
+        t.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        header.addView(t, new LinearLayout.LayoutParams(0, -2, 1));
+        box.addView(header);
+        return header;
+    }
+    private LinearLayout modalBody(LinearLayout box) {
+        ScrollView sc = scroll();
+        LinearLayout content = col();
+        sc.addView(content);
+        box.addView(sc, new LinearLayout.LayoutParams(-1, 0, 1));
+        return content;
+    }
+    private void action(LinearLayout row, String title, boolean primary, Runnable run) {
+        Button b = compactButton(title, run);
+        if (primary)
+            b.setBackground(background(ACCENT, 10));
+        if (primary)
+            b.setTextColor(0xff172134);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(40), 1);
+        lp.setMargins(dp(2), dp(3), dp(2), 0);
+        row.addView(b, lp);
     }
     private void refreshProcesses(Runnable listener) {
         if (listener != null)
@@ -963,6 +1047,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
         if (selectedSession == null)
             selectedSession = CaptureService.activeSession;
         if (!Objects.equals(dataSession, selectedSession)) {
+            ++relatedEpoch;
             dataSession = selectedSession;
             packetFilter = new PacketFilter();
             selected.clear();
@@ -1075,16 +1160,25 @@ final class WorkspaceUi extends ContextThemeWrapper {
                     h.check.setFocusable(false);
                     line.addView(h.check, new LinearLayout.LayoutParams(dp(40), dp(44)));
                     h.labels = landscape() ? row() : col();
-                    h.meta = text("", landscape() ? 11 : 12, ACCENT);
+                    h.meta = text("", 13, TEXT);
+                    h.stamp = text("", 10, MUTED);
+                    h.stamp.setSingleLine();
+                    h.meta.setEllipsize(android.text.TextUtils.TruncateAt.END);
                     h.route = text("", landscape() ? 12 : 11, TEXT);
                     h.route.setSingleLine();
                     h.route.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
                     h.meta.setSingleLine();
                     if (landscape()) {
-                        h.labels.addView(h.meta, new LinearLayout.LayoutParams(dp(155), -2));
+                        LinearLayout names = col();
+                        names.addView(h.meta);
+                        names.addView(h.stamp);
+                        h.labels.addView(names, new LinearLayout.LayoutParams(dp(180), -2));
                         h.labels.addView(h.route, new LinearLayout.LayoutParams(0, -2, 1));
                     } else {
-                        h.labels.addView(h.meta);
+                        LinearLayout names = row();
+                        names.addView(h.meta, new LinearLayout.LayoutParams(0, -2, 1));
+                        names.addView(h.stamp);
+                        h.labels.addView(names);
                         h.labels.addView(h.route);
                     }
                     line.addView(h.labels, new LinearLayout.LayoutParams(0, -2, 1));
@@ -1102,15 +1196,16 @@ final class WorkspaceUi extends ContextThemeWrapper {
                 h.check.setChecked(checked);
                 h.check.setContentDescription("选择记录 " + r.id);
                 h.check.setOnClickListener(v -> toggle(r));
-                h.meta.setText((r.dir == 1          ? "↑ "
-                                       : r.dir == 0 ? "↓ "
-                                                    : "? ")
-                    + r.protocol() + " · " + r.time()
-                    + (landscape() ? "" : "  #" + r.id + " · " + r.caplen + " B")
-                    + (alias != null ? " ★" : ""));
-                h.meta.setTextColor(r.dir == 1 ? 0xff80d5c2 : ACCENT);
-                h.route.setText(
-                    (alias != null && !alias.isEmpty() ? alias + " · " : "") + r.route());
+                boolean named = alias != null && !alias.isEmpty();
+                String direction = r.dir == 1 ? "↑ " : r.dir == 0 ? "↓ " : "? ";
+                h.meta.setText(named
+                        ? alias
+                        : direction + r.protocol() + "  #" + r.id + (alias != null ? " ★" : ""));
+                h.meta.setTypeface(null, named ? Typeface.BOLD : Typeface.NORMAL);
+                h.meta.setTextColor(named ? TEXT : r.dir == 1 ? 0xff80d5c2 : ACCENT);
+                h.stamp.setText(landscape() ? direction + r.protocol() + " · " + r.time()
+                                            : r.time() + " · " + PacketStore.formatBytes(r.caplen));
+                h.route.setText(r.route());
                 h.size.setText(r.caplen + " B  #" + r.id);
                 convert.setBackgroundColor(checked ? 0xe52a344a : SURFACE);
                 return convert;
@@ -1152,7 +1247,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
     private static final class PacketRow {
         CheckBox check;
         LinearLayout labels;
-        TextView meta, route, size;
+        TextView meta, route, size, stamp;
     }
     private void toggle(PacketStore.Record r) {
         liveRefresh = false;
@@ -1172,15 +1267,15 @@ final class WorkspaceUi extends ContextThemeWrapper {
         if (tab != 1 || dataInfo == null)
             return;
         long total = selectedSession == null ? 0 : PacketStore.count(selectedSession);
-        long[] counts = {total, bookmarks.size(), relatedCount};
+        long[] counts = {total, bookmarks.size(), relatedKey.isEmpty() ? 0 : relatedCount};
         for (int i = 0; i < viewTabs.size(); i++) {
             TextView v = viewTabs.get(i);
             v.setTextColor(i == dataView ? TEXT : MUTED);
             ((View) v.getParent())
                 .setBackground(background(i == dataView ? 0xff303b55 : 0x0010121a, 8));
             TextView badge = viewBadges.get(i);
-            badge.setText("" + counts[i]);
-            badge.setVisibility(counts[i] < 0 ? View.GONE : View.VISIBLE);
+            badge.setText(counts[i] == -2 ? "!" : counts[i] < 0 ? "…" : "" + counts[i]);
+            badge.setVisibility(View.VISIBLE);
         }
         saveTool.setEnabled(!selected.isEmpty());
         compareTool.setEnabled(selected.size() == 2);
@@ -1218,6 +1313,9 @@ final class WorkspaceUi extends ContextThemeWrapper {
             + (exhausted ? " · 已到末尾" : ""));
     }
     private void loadPackets(boolean reset) {
+        if (reset && dataView == 2 && selectedSession != null && !relatedKey.isEmpty()
+            && (relatedCount < 0 || PacketStore.count(selectedSession) != knownCount))
+            countRelated(selectedSession, relatedKey);
         loadWindow(reset, false);
     }
     private void loadWindow(boolean reset, boolean newer) {
@@ -1326,6 +1424,40 @@ final class WorkspaceUi extends ContextThemeWrapper {
             }
         });
     }
+    private void countRelated(File session, String key) {
+        int token = ++relatedEpoch;
+        io.execute(() -> {
+            try {
+                PacketFilter f = new PacketFilter();
+                f.groupKey = key;
+                long cursor = -1, total = 0;
+                do {
+                    PacketStore.Query q = PacketStore.query(session, cursor, f,
+                        () -> relatedEpoch != token || Thread.currentThread().isInterrupted());
+                    if (q.cancelled)
+                        return;
+                    total += q.records.size();
+                    cursor = q.next;
+                } while (cursor >= 0);
+                final long count = total;
+                post(() -> {
+                    if (token == relatedEpoch && session.equals(selectedSession)
+                        && key.equals(relatedKey)) {
+                        relatedCount = count;
+                        updateDataTools();
+                    }
+                });
+            } catch (Exception e) {
+                post(() -> {
+                    if (token == relatedEpoch) {
+                        relatedCount = -2;
+                        updateDataTools();
+                        toast("关联数量读取失败，可重新打开该连接");
+                    }
+                });
+            }
+        });
+    }
     private void saveSelection() {
         if (selected.isEmpty())
             return;
@@ -1343,7 +1475,11 @@ final class WorkspaceUi extends ContextThemeWrapper {
                         return;
                     bookmarks = notes;
                     selected.clear();
-                    loadPackets(true);
+                    if (name != null) {
+                        packetAdapter.notifyDataSetChanged();
+                        updateDataTools();
+                    } else
+                        loadPackets(true);
                     toast(remove ? "已移出保存列表，原包保留" : "已保存");
                 });
             } catch (Exception e) {
@@ -1395,6 +1531,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
                         relatedCount = -1;
                         relatedKey = PacketFilter.group(r, 0);
                         relatedLabel = r.protocol() + " · " + r.route();
+
                         dataView = 2;
                         selected.clear();
                         loadPackets(true);
@@ -1413,44 +1550,34 @@ final class WorkspaceUi extends ContextThemeWrapper {
             .show();
     }
     private void renameBookmark(PacketStore.Record r) {
-        EditText name = input("收藏名称");
-        name.setText(bookmarks.getOrDefault(r.id, ""));
-        LinearLayout box = col();
-        box.setPadding(dp(16), dp(16), dp(16), dp(12));
-        box.addView(text("重命名收藏 #" + r.id, 17, TEXT));
-        gap(box, 8);
-        box.addView(name);
-        Dialog d = dialog("", box);
-        fullButton(box, "保存", true, () -> {
-            String value = name.getText().toString().trim();
-            if (value.length() > 100) {
-                name.setError("最多 100 字");
-                return;
-            }
+        editTextDialog("收藏名称", bookmarks.getOrDefault(r.id, ""), value -> {
+            if (value.length() > 100)
+                throw new IOException("最多100字");
             changeNotes(Collections.singleton(r.id), false, value);
-            d.dismiss();
         });
-        sizeDialog(d, false);
     }
     private void searchDialog() {
         LinearLayout box = col();
         box.setPadding(dp(16), dp(16), dp(16), dp(12));
-        box.addView(text("搜索载荷", 18, TEXT));
-        gap(box, 10);
+        LinearLayout heading = modalHead(box, "搜索载荷");
+        LinearLayout form = modalBody(box);
+        gap(form, 6);
         Spinner mode =
             spinner(new String[] {"文本与地址", "十六进制：载荷任意处", "十六进制：载荷开头"},
                 packetFilter.magic == null ? 0
                     : packetFilter.prefix  ? 2
                                            : 1);
-        box.addView(mode);
+        form.addView(mode);
         EditText value = input("例如 login 或 01 AB FF");
         String h = "";
         if (packetFilter.magic != null)
             for (byte b : packetFilter.magic) h += String.format(Locale.ROOT, "%02X ", b & 255);
         value.setText(packetFilter.magic == null ? packetFilter.text : h.trim());
-        box.addView(value);
+        form.addView(value);
         Dialog d = dialog("", box);
-        fullButton(box, "应用搜索", true, () -> {
+        tool(heading, "close", "关闭", () -> d.dismiss());
+        LinearLayout footer = row();
+        action(footer, "搜索", true, () -> {
             String v = value.getText().toString().trim();
             byte[] bytes = null;
             if (mode.getSelectedItemPosition() > 0 && !v.isEmpty()) {
@@ -1475,13 +1602,14 @@ final class WorkspaceUi extends ContextThemeWrapper {
             d.dismiss();
             loadPackets(true);
         });
-        fullButton(box, "清除搜索", false, () -> {
+        action(footer, "清除", false, () -> {
             packetFilter.text = "";
             packetFilter.magic = null;
             d.dismiss();
             loadPackets(true);
         });
-        sizeDialog(d, false);
+        box.addView(footer);
+        sizeEditor(d, 260);
     }
     private Spinner spinner(String[] values, int initial) {
         Spinner spinner = new Spinner(this) {
@@ -1510,7 +1638,8 @@ final class WorkspaceUi extends ContextThemeWrapper {
     private void filterDialog() {
         LinearLayout box = col();
         box.setPadding(dp(16), dp(16), dp(16), dp(10));
-        box.addView(text("显示筛选", 18, TEXT));
+        LinearLayout heading = modalHead(box, "显示筛选");
+        LinearLayout form = modalBody(box);
         Spinner proto = spinner(new String[] {"全部协议", "TCP", "UDP", "ICMP", "ICMPv6"},
             packetFilter.protocol == 6        ? 1
                 : packetFilter.protocol == 17 ? 2
@@ -1524,9 +1653,9 @@ final class WorkspaceUi extends ContextThemeWrapper {
                                               : 3);
         Spinner readable = spinner(
             new String[] {"全部内容", "可读文本载荷", "非文本或无载荷"}, packetFilter.readable);
-        box.addView(proto);
-        box.addView(direction);
-        box.addView(readable);
+        form.addView(proto);
+        form.addView(direction);
+        form.addView(readable);
         LinearLayout sizes = row();
         EditText min = input("最小字节"), max = input("最大字节");
         min.setInputType(2);
@@ -1537,9 +1666,11 @@ final class WorkspaceUi extends ContextThemeWrapper {
             max.setText("" + packetFilter.maxBytes);
         sizes.addView(min, new LinearLayout.LayoutParams(0, -2, 1));
         sizes.addView(max, new LinearLayout.LayoutParams(0, -2, 1));
-        box.addView(sizes);
+        form.addView(sizes);
         Dialog d = dialog("", box);
-        fullButton(box, "应用筛选", true, () -> {
+        tool(heading, "close", "关闭", () -> d.dismiss());
+        LinearLayout footer = row();
+        action(footer, "应用", true, () -> {
             try {
                 int lo = min.getText().length() == 0 ? 0
                                                      : Integer.parseInt(min.getText().toString()),
@@ -1562,13 +1693,14 @@ final class WorkspaceUi extends ContextThemeWrapper {
                 min.setError("请填写有效的字节范围");
             }
         });
-        fullButton(box, "重置筛选与搜索", false, () -> {
+        action(footer, "重置", false, () -> {
             packetFilter = new PacketFilter();
             selected.clear();
             d.dismiss();
             loadPackets(true);
         });
-        sizeDialog(d, false);
+        box.addView(footer);
+        sizeEditor(d, 340);
     }
     private void compareSelected() {
         if (selected.size() != 2)
@@ -1609,9 +1741,10 @@ final class WorkspaceUi extends ContextThemeWrapper {
         LinearLayout box = col();
         box.setPadding(dp(10), dp(4), dp(10), dp(6));
         LinearLayout head = row();
-        TextView title =
-            text("#" + r.id + " · " + r.protocol() + " · " + r.time() + " · " + r.caplen + " B", 13,
-                TEXT);
+        String alias = bookmarks.getOrDefault(r.id, "");
+        TextView title = text((alias.isEmpty() ? "" : alias + " · ") + "#" + r.id + " · "
+                + r.protocol() + " · " + r.time() + " · " + r.caplen + " B",
+            13, TEXT);
         title.setSingleLine();
         title.setEllipsize(android.text.TextUtils.TruncateAt.END);
         head.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
@@ -1845,70 +1978,454 @@ final class WorkspaceUi extends ContextThemeWrapper {
             }
         };
     }
-    private BaseAdapter historyAdapter(List<String> items) {
-        return new BaseAdapter() {
-            public int getCount() {
-                return items.size();
-            }
-            public Object getItem(int p) {
-                return items.get(p);
-            }
-            public long getItemId(int p) {
-                return p;
-            }
-            public View getView(int p, View cv, ViewGroup parent) {
-                TextView item = text(items.get(p), 14, TEXT);
-                item.setPadding(dp(14), dp(14), dp(14), dp(14));
-                item.setBackground(background(SURFACE, 14));
-                return item;
-            }
-        };
+    private List<File> libraryRoots() {
+        Set<File> roots = new LinkedHashSet<>();
+        roots.add(new File(getExternalFilesDir(null), "captures"));
+        roots.add(baseDir());
+        for (String root : prefs.getStringSet("roots", Collections.emptySet()))
+            roots.add(new File(root));
+        return new ArrayList<>(roots);
+    }
+    private boolean viewing(File f) {
+        return selectedSession != null
+            && selectedSession.toPath().toAbsolutePath().normalize().startsWith(
+                f.toPath().toAbsolutePath().normalize());
+    }
+    private String date(long time) {
+        return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT)
+            .format(new Date(time));
+    }
+    private String elapsed(long ms) {
+        long seconds = Math.max(0, ms / 1000);
+        return seconds >= 3600 ? String.format(Locale.ROOT, "%d:%02d:%02d", seconds / 3600,
+                                     seconds / 60 % 60, seconds % 60)
+                               : String.format(Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60);
     }
     private void history() {
+        int epoch = ++historyEpoch;
         LinearLayout page = col();
         body.addView(page);
         LinearLayout head = row();
-        head.addView(text("抓包历史", 21, TEXT), new LinearLayout.LayoutParams(0, -2, 1));
-        head.addView(button("导入 PCAP", false, () -> {
-            pathDialog(Environment.getExternalStorageDirectory(), true, f -> importFile(f));
-        }));
+        TextView title =
+            text(historyManaging ? "已选 " + historySelection.size() + " 个" : "会话库", 18, TEXT);
+        title.setTypeface(null, Typeface.BOLD);
+        head.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        if (historyManaging) {
+            tool(head, "select", "全选 / 取消全选", () -> {
+                List<SessionLibrary.Entry> shown = new ArrayList<>();
+                for (SessionLibrary.Entry e : libraryEntries)
+                    if (historyGroup.isEmpty() || historyGroup.equals(e.group))
+                        shown.add(e);
+                if (historySelection.size() == shown.size())
+                    historySelection.clear();
+                else {
+                    historySelection.clear();
+                    for (SessionLibrary.Entry e : shown) historySelection.add(e.file);
+                }
+                showTab(2);
+            });
+            tool(head, "folder", "移动到工作分组",
+                () -> collectionDialog(new ArrayList<>(historySelection)));
+            tool(head, "trash", "删除选中的本地会话",
+                () -> confirmDelete(new ArrayList<>(historySelection), null));
+            tool(head, "close", "结束批量管理", () -> {
+                historyManaging = false;
+                historySelection.clear();
+                showTab(2);
+            });
+        } else {
+            tool(head, "import", "导入 PCAP",
+                ()
+                    -> pathDialog(
+                        Environment.getExternalStorageDirectory(), true, f -> importFile(f)));
+            tool(head, "folder", "按工作分组查看", () -> historyGroups());
+            tool(head, "sort", "排序会话",
+                ()
+                    -> alert()
+                        .setTitle("排序方式")
+                        .setSingleChoiceItems(new String[] {"时间：最新优先", "时间：最早优先",
+                                                  "名称：A–Z", "包数：最多优先", "占用：最大优先"},
+                            prefs.getInt("historySort", 0),
+                            (d, n) -> {
+                                prefs.edit().putInt("historySort", n).apply();
+                                d.dismiss();
+                                showTab(2);
+                            })
+                        .setNegativeButton("取消", null)
+                        .show());
+        }
         page.addView(head);
-        gap(page, 10);
+        TextView summary = text(historyGroup.isEmpty() ? "全部会话" : historyGroup, 11, MUTED);
+        summary.setPadding(dp(4), 0, 0, dp(5));
+        page.addView(summary);
+        FrameLayout area = new FrameLayout(this);
         ListView list = new ListView(this);
-        list.setDivider(new ColorDrawable(android.graphics.Color.TRANSPARENT));
-        list.setDividerHeight(dp(10));
-        page.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
+        list.setDivider(new ColorDrawable(0x0010121a));
+        list.setDividerHeight(dp(6));
+        TextView empty = text("正在读取会话…", 13, MUTED);
+        empty.setGravity(Gravity.CENTER);
+        area.addView(list, new FrameLayout.LayoutParams(-1, -1));
+        area.addView(empty, new FrameLayout.LayoutParams(-1, -1));
+        list.setEmptyView(empty);
+        page.addView(area, new LinearLayout.LayoutParams(-1, 0, 1));
         File base = baseDir();
         io.execute(() -> {
-            List<File> sessions = PacketStore.history(this, base);
-            List<String> labels = new ArrayList<>();
-            for (File f : sessions) {
-                JSONObject m = PacketStore.manifest(f);
-                String state = m.optString("state");
-                String status = state.equals("saved") ? "已保存"
-                    : state.equals("imported")        ? "已导入"
-                    : state.equals("attention")       ? "存在丢弃或写入提示"
-                    : CaptureService.active && f.equals(CaptureService.activeSession)
-                    ? "抓包中"
-                    : "需检查中断状态";
-                labels.add(m.optString("label", f.getName()) + "\n" + f.getName() + "\n"
-                    + PacketStore.count(f) + " 包 · " + status
-                    + (m.optString("scope").equals("demo") ? " · 合成演示" : ""));
+            List<SessionLibrary.Entry> entries = new ArrayList<>();
+            for (File f : PacketStore.history(this, base)) {
+                try {
+                    entries.add(SessionLibrary.read(f));
+                } catch (Exception ignored) {
+                }
             }
+            SessionLibrary.sort(entries, prefs.getInt("historySort", 0));
             post(() -> {
-                if (tab != 2)
+                if (tab != 2 || historyEpoch != epoch)
                     return;
-                list.setAdapter(historyAdapter(labels));
-                list.setOnItemClickListener((a, v, p, id) -> {
-                    selectedSession = sessions.get(p);
-                    showTab(1);
+                libraryEntries = entries;
+                List<SessionLibrary.Entry> shown = new ArrayList<>();
+                long bytes = 0;
+                for (SessionLibrary.Entry e : entries)
+                    if (historyGroup.isEmpty() || historyGroup.equals(e.group)) {
+                        shown.add(e);
+                        bytes += e.bytes;
+                    }
+                summary.setText((historyGroup.isEmpty() ? "全部会话" : historyGroup) + " · "
+                    + shown.size() + " 个 · " + PacketStore.formatBytes(bytes));
+                empty.setText(shown.isEmpty() ? "这里还没有会话" : "");
+                list.setAdapter(new BaseAdapter() {
+                    public int getCount() {
+                        return shown.size();
+                    }
+                    public Object getItem(int i) {
+                        return shown.get(i);
+                    }
+                    public long getItemId(int i) {
+                        return i;
+                    }
+                    public View getView(int i, View cv, ViewGroup parent) {
+                        SessionLibrary.Entry e = shown.get(i);
+                        boolean current = viewing(e.file);
+                        LinearLayout line = row();
+                        line.setPadding(dp(12), dp(10), dp(12), dp(10));
+                        GradientDrawable outline = background(current ? 0xf226324b : SURFACE, 14);
+                        if (current)
+                            outline.setStroke(dp(1), ACCENT);
+                        line.setBackground(outline);
+                        if (historyManaging) {
+                            CheckBox check = new CheckBox(WorkspaceUi.this);
+                            check.setButtonTintList(
+                                android.content.res.ColorStateList.valueOf(ACCENT));
+                            check.setChecked(historySelection.contains(e.file));
+                            check.setFocusable(false);
+                            check.setOnClickListener(v -> {
+                                if (historySelection.contains(e.file))
+                                    historySelection.remove(e.file);
+                                else
+                                    historySelection.add(e.file);
+                                title.setText("已选 " + historySelection.size() + " 个");
+                            });
+                            line.addView(check, new LinearLayout.LayoutParams(dp(36), dp(44)));
+                        }
+                        LinearLayout labels = col();
+                        LinearLayout first = row();
+                        TextView name = text(e.title, 15, TEXT);
+                        name.setTypeface(null, Typeface.BOLD);
+                        name.setSingleLine();
+                        name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                        first.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+                        if (current) {
+                            TextView badge = text("正在查看", 10, ACCENT);
+                            badge.setPadding(dp(7), dp(2), dp(7), dp(2));
+                            badge.setBackground(background(0xff354361, 8));
+                            first.addView(badge);
+                        }
+                        labels.addView(first);
+                        labels.addView(text(date(e.started) + " · " + e.packets + " 包 · "
+                                + PacketStore.formatBytes(e.bytes)
+                                + (e.duration > 0 ? " · " + elapsed(e.duration) : ""),
+                            11, MUTED));
+                        TextView detail = text((e.group.isEmpty() ? "未分组" : e.group) + " · "
+                                + (e.description.isEmpty() ? e.target : e.description)
+                                + (e.unknown > 0 ? " · 未知 " + e.unknown + " 包" : ""),
+                            11, current ? ACCENT : MUTED);
+                        detail.setSingleLine();
+                        detail.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                        labels.addView(detail);
+                        line.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+                        return line;
+                    }
                 });
-                list.setOnItemLongClickListener((a, v, p, id) -> {
-                    exportDialog(sessions.get(p));
+                list.setOnItemClickListener((a, v, i, id) -> {
+                    SessionLibrary.Entry e = shown.get(i);
+                    if (historyManaging) {
+                        if (historySelection.contains(e.file))
+                            historySelection.remove(e.file);
+                        else
+                            historySelection.add(e.file);
+                        showTab(2);
+                    } else
+                        sessionOverview(e.file);
+                });
+                list.setOnItemLongClickListener((a, v, i, id) -> {
+                    historyManaging = true;
+                    historySelection.add(shown.get(i).file);
+                    showTab(2);
                     return true;
                 });
             });
         });
+    }
+    private void historyGroups() {
+        Set<String> groups = new TreeSet<>();
+        for (SessionLibrary.Entry e : libraryEntries)
+            if (!e.group.isEmpty())
+                groups.add(e.group);
+        List<String> values = new ArrayList<>();
+        values.add("全部会话");
+        values.addAll(groups);
+        alert()
+            .setTitle("工作分组")
+            .setItems(values.toArray(new String[0]),
+                (d, n) -> {
+                    historyGroup = n == 0 ? "" : values.get(n);
+                    showTab(2);
+                })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+    private void metric(LinearLayout row, String value, String label) {
+        LinearLayout tile = col();
+        tile.setPadding(dp(10), dp(8), dp(10), dp(8));
+        tile.setBackground(background(BG, 10));
+        TextView number = text(value, 20, TEXT);
+        number.setSingleLine();
+        number.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        number.setTypeface(null, Typeface.BOLD);
+        tile.addView(number);
+        tile.addView(text(label, 10, MUTED));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1);
+        lp.setMargins(dp(2), dp(2), dp(2), dp(2));
+        row.addView(tile, lp);
+    }
+    private void information(LinearLayout parent, String label, String value) {
+        LinearLayout line = row();
+        line.setGravity(Gravity.TOP);
+        line.setPadding(dp(3), dp(5), dp(3), dp(5));
+        TextView key = text(label, 11, MUTED);
+        line.addView(key, new LinearLayout.LayoutParams(dp(72), -2));
+        TextView text = text(value, 12, TEXT);
+        text.setTextIsSelectable(true);
+        line.addView(text, new LinearLayout.LayoutParams(0, -2, 1));
+        parent.addView(line);
+    }
+    private void sessionOverview(File file) {
+        LinearLayout box = col();
+        box.setPadding(dp(12), dp(4), dp(12), dp(8));
+        LinearLayout head = modalHead(box, "会话概览");
+        LinearLayout content = modalBody(box);
+        TextView loading = text("读取中…", 13, MUTED);
+        content.addView(loading);
+        Dialog d = dialog("", box);
+        tool(head, "close", "关闭概览", () -> d.dismiss());
+        LinearLayout manage = row();
+        action(manage, "名称与备注", false, () -> editSession(file, d));
+        action(
+            manage, "工作分组", false, () -> collectionDialog(Collections.singletonList(file), d));
+        action(manage, "删除", false, () -> confirmDelete(Collections.singletonList(file), d));
+        ((Button) manage.getChildAt(2)).setTextColor(RED);
+        box.addView(manage);
+        LinearLayout footer = row();
+        action(footer, "查看报告", false, () -> reportDialog(file));
+        action(footer, "导出", false, () -> exportDialog(file));
+        action(footer, "打开记录", true, () -> {
+            selectedSession = file;
+            historyManaging = false;
+            historySelection.clear();
+            d.dismiss();
+            showTab(1);
+        });
+        box.addView(footer);
+        sizeEditor(d, 440);
+        io.execute(() -> {
+            try {
+                SessionLibrary.Entry e = SessionLibrary.read(file);
+                post(() -> {
+                    if (!d.isShowing())
+                        return;
+                    content.removeAllViews();
+                    ((TextView) head.getChildAt(0)).setText(e.title);
+                    JSONObject m = e.meta;
+                    TextView caption =
+                        text((viewing(file) ? "正在查看 · " : "") + date(e.started), 11, ACCENT);
+                    caption.setPadding(dp(3), 0, dp(3), dp(6));
+                    content.addView(caption);
+                    LinearLayout first = row(), second = row();
+                    content.addView(first);
+                    if (!landscape())
+                        content.addView(second);
+                    else
+                        second = first;
+                    metric(first, "" + e.packets, "主会话包数");
+                    metric(first, PacketStore.formatBytes(e.bytes), "本地文件占用");
+                    metric(second, e.duration > 0 ? elapsed(e.duration) : "—", "采集时长");
+                    metric(second, "" + e.unknown, "未知归属保留");
+                    gap(content, 8);
+                    LinearLayout quality = card(content, "质量摘要");
+                    information(quality, "内核 / 队列",
+                        (m.optBoolean("kernelStatsAvailable") ? "" + m.optLong("kernelDrops")
+                                                              : "未采样")
+                            + " / " + m.optLong("queueDrops"));
+                    information(quality, "未知排除", "" + m.optLong("unresolved"));
+                    information(quality, "截断 / 解析",
+                        m.optLong("truncated") + " / " + m.optLong("parseFailedSaved"));
+                    if (!m.optString("error").isEmpty())
+                        quality.addView(text(m.optString("error"), 12, RED));
+                    information(content, "抓取目标",
+                        e.target + (m.optInt("uid", -1) >= 0 ? " · UID " + m.optInt("uid") : ""));
+                    information(content, "工作分组", e.group.isEmpty() ? "未分组" : e.group);
+                    if (m.has("finished"))
+                        information(content, "结束时间", date(m.optLong("finished")));
+                    if (!e.description.isEmpty())
+                        information(content, "操作备注", e.description);
+                    information(content, "本地目录", file.getAbsolutePath());
+                });
+            } catch (Exception e) {
+                post(() -> loading.setText("读取失败：" + e.getMessage()));
+            }
+        });
+    }
+    private void editSession(File file, Dialog overview) {
+        JSONObject meta = PacketStore.manifest(file);
+        LinearLayout box = col();
+        box.setPadding(dp(14), dp(4), dp(14), dp(8));
+        LinearLayout head = modalHead(box, "名称与备注");
+        LinearLayout content = modalBody(box);
+        EditText title = input("会话名称"), note = input("备注（可选）");
+        title.setText(meta.optString("title", meta.optString("label", file.getName())));
+        note.setText(meta.optString("description"));
+        note.setSingleLine(false);
+        note.setMinLines(2);
+        content.addView(title);
+        gap(content, 8);
+        content.addView(note);
+        Dialog d = dialog("", box);
+        tool(head, "close", "关闭", () -> d.dismiss());
+        LinearLayout footer = row();
+        action(footer, "取消", false, () -> d.dismiss());
+        action(footer, "保存", true, () -> {
+            String name = title.getText().toString().trim(),
+                   description = note.getText().toString();
+            io.execute(() -> {
+                try {
+                    SessionLibrary.annotate(file, libraryRoots(),
+                        CaptureService.active ? CaptureService.activeSession : null, name,
+                        description, null);
+                    post(() -> {
+                        d.dismiss();
+                        overview.dismiss();
+                        if (tab == 2)
+                            showTab(2);
+                    });
+                } catch (Exception e) {
+                    post(() -> title.setError(e.getMessage()));
+                }
+            });
+        });
+        box.addView(footer);
+        sizeEditor(d, 270);
+    }
+    private void collectionDialog(List<File> files) {
+        collectionDialog(files, null);
+    }
+    private void collectionDialog(List<File> files, Dialog overview) {
+        if (files.isEmpty()) {
+            toast("请先选择会话");
+            return;
+        }
+        editTextDialog("工作分组（留空取消分组）", "", name -> {
+            if (name.length() > 48)
+                throw new IOException("分组名称最多48字");
+            List<File> roots = libraryRoots();
+            io.execute(() -> {
+                List<String> failures = new ArrayList<>();
+                for (File file : files) try {
+                        SessionLibrary.annotate(file, roots,
+                            CaptureService.active ? CaptureService.activeSession : null, null, null,
+                            name);
+                    } catch (Exception e) {
+                        failures.add(file.getName() + "：" + e.getMessage());
+                    }
+                post(() -> {
+                    if (overview != null)
+                        overview.dismiss();
+                    historySelection.clear();
+                    historyManaging = false;
+                    if (tab == 2)
+                        showTab(2);
+                    if (failures.isEmpty())
+                        toast("分组已更新");
+                    else
+                        error("部分会话未更改", new IOException(String.join("\n", failures)));
+                });
+            });
+        });
+    }
+    private void confirmDelete(List<File> files, Dialog overview) {
+        if (files.isEmpty()) {
+            toast("请先选择会话");
+            return;
+        }
+        alert()
+            .setTitle("删除 " + files.size() + " 个本地会话？")
+            .setMessage("将同时删除手机中的原包、未知包、收藏、报告及会话目录，无法撤销。正在抓取的"
+                + "会话不会删除。")
+            .setNegativeButton("保留", null)
+            .setPositiveButton("彻底删除",
+                (dialog, which) -> {
+                    List<File> roots = libraryRoots();
+                    io.execute(() -> {
+                        List<File> deleted = new ArrayList<>();
+                        List<String> failures = new ArrayList<>();
+                        for (File file : files) try {
+                                SessionLibrary.delete(file, roots,
+                                    CaptureService.active ? CaptureService.activeSession : null);
+                                deleted.add(file);
+                            } catch (Exception e) {
+                                failures.add(file.getName() + "：" + e.getMessage());
+                            }
+                        post(() -> {
+                            for (File f : deleted) {
+                                if (viewing(f)) {
+                                    selectedSession = null;
+                                    dataSession = null;
+                                    records.clear();
+                                    bookmarks.clear();
+                                    selected.clear();
+                                    relatedKey = "";
+                                    ++relatedEpoch;
+                                }
+                                if (!CaptureService.active && CaptureService.activeSession != null
+                                    && CaptureService.activeSession.toPath().startsWith(f.toPath()))
+                                    synchronized (CaptureService.LOCK) {
+                                        CaptureService.activeSession = null;
+                                        CaptureService.live = new JSONObject();
+                                    }
+                            }
+                            if (overview != null && !deleted.isEmpty())
+                                overview.dismiss();
+                            historySelection.clear();
+                            historyManaging = false;
+                            if (tab == 2)
+                                showTab(2);
+                            if (failures.isEmpty())
+                                toast("已删除 " + deleted.size() + " 个会话及本地文件");
+                            else
+                                error("部分文件未删除，剩余目录保留",
+                                    new IOException(String.join("\n", failures)));
+                        });
+                    });
+                })
+            .show();
     }
     private void exportDialog(File session) {
         if (CaptureService.active
@@ -2044,39 +2561,118 @@ final class WorkspaceUi extends ContextThemeWrapper {
             }
         });
     }
+    private LinearLayout preferencesCard(LinearLayout parent, String number, String title) {
+        LinearLayout card = card(parent, "");
+        LinearLayout head = row();
+        TextView index = text(number, 11, ACCENT);
+        index.setGravity(Gravity.CENTER);
+        index.setBackground(background(0xff303d58, 7));
+        head.addView(index, new LinearLayout.LayoutParams(dp(28), dp(26)));
+        TextView label = text(title, 16, TEXT);
+        label.setPadding(dp(9), 0, 0, 0);
+        label.setTypeface(null, Typeface.BOLD);
+        head.addView(label);
+        card.addView(head);
+        gap(card, 6);
+        return card;
+    }
+    private void preference(
+        LinearLayout card, String title, String value, String icon, Runnable run) {
+        LinearLayout line = row();
+        line.setMinimumHeight(dp(48));
+        ToolIcon symbol = new ToolIcon(this, icon, title, run);
+        line.addView(symbol, new LinearLayout.LayoutParams(dp(34), dp(40)));
+        TextView key = text(title, 13, TEXT);
+        line.addView(key, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView current = text(value, 12, ACCENT);
+        if (title.equals("背景不透明度"))
+            current.setTag("opacity-value");
+        current.setGravity(Gravity.RIGHT);
+        current.setSingleLine();
+        current.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        line.addView(current, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView arrow = text(" ›", 18, MUTED);
+        line.addView(arrow);
+        line.setOnClickListener(v -> run.run());
+        card.addView(line);
+    }
+    private void preferenceToggle(
+        LinearLayout card, String title, String key, boolean initial, String icon) {
+        LinearLayout line = row();
+        line.setMinimumHeight(dp(48));
+        ToolIcon image = new ToolIcon(this, icon, title, () -> {});
+        image.setClickable(false);
+        line.addView(image, new LinearLayout.LayoutParams(dp(34), dp(40)));
+        TextView label = text(title, 13, TEXT);
+        line.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
+        Switch toggle = new Switch(this);
+        toggle.setContentDescription(title);
+        toggle.setChecked(prefs.getBoolean(key, initial));
+        toggle.setThumbTintList(new android.content.res.ColorStateList(
+            new int[][] {new int[] {android.R.attr.state_checked}, new int[] {}},
+            new int[] {ACCENT, 0xff677084}));
+        toggle.setOnCheckedChangeListener((v, checked) -> {
+            prefs.edit().putBoolean(key, checked).apply();
+            toast("已更新，下次抓包生效");
+        });
+        line.addView(toggle);
+        line.setOnClickListener(v -> toggle.setChecked(!toggle.isChecked()));
+        card.addView(line);
+    }
     private void settings() {
         ScrollView sc = scroll();
         LinearLayout page = col();
         sc.addView(page);
         body.addView(sc);
-        LinearLayout storage = card(page, "保存位置");
-        TextView path = text(baseDir().getAbsolutePath(), 14, ACCENT);
-        path.setTextIsSelectable(true);
-        gap(storage, 10);
+        LinearLayout heading = row();
+        TextView title = text("偏好设置", 23, TEXT);
+        title.setTypeface(null, Typeface.BOLD);
+        heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView version = text("NetCap · 0.3.1", 11, ACCENT);
+        version.setPadding(dp(9), dp(5), dp(9), dp(5));
+        version.setBackground(background(0xff29364e, 9));
+        heading.addView(version);
+        page.addView(heading);
+        gap(page, 12);
+        LinearLayout layout = landscape() ? row() : col();
+        layout.setGravity(Gravity.TOP);
+        LinearLayout left = col(), right = col();
+        if (landscape()) {
+            layout.addView(left, new LinearLayout.LayoutParams(0, -2, 1));
+            layout.addView(right, new LinearLayout.LayoutParams(0, -2, 1));
+        } else {
+            layout.addView(left);
+            layout.addView(right);
+        }
+        page.addView(layout);
+        LinearLayout storage = preferencesCard(left, "01", "存储与命名");
+        preference(storage, "保存目录", baseDir().getName(), "folder",
+            () -> folderDialog(baseDir(), folder -> {
+                Set<String> roots =
+                    new HashSet<>(prefs.getStringSet("roots", Collections.emptySet()));
+                roots.add(folder.getAbsolutePath());
+                prefs.edit()
+                    .putString("directory", folder.getAbsolutePath())
+                    .putStringSet("roots", roots)
+                    .apply();
+                showTab(3);
+            }));
+        TextView path = text(baseDir().getAbsolutePath(), 11, MUTED);
+        path.setMaxLines(2);
+        path.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        path.setPadding(dp(5), 0, dp(5), dp(5));
         storage.addView(path);
-        fullButton(storage, "… 选择目录", false, () -> folderDialog(baseDir(), f -> {
-            Set<String> roots = new HashSet<>(prefs.getStringSet("roots", Collections.emptySet()));
-            roots.add(f.getAbsolutePath());
-            prefs.edit()
-                .putString("directory", f.getAbsolutePath())
-                .putStringSet("roots", roots)
-                .apply();
-            path.setText(f.getAbsolutePath());
-        }));
-        EditText prefix = input("文件名前缀");
-        prefix.setText(prefs.getString("prefix", "抓包"));
-        gap(storage, 12);
-        storage.addView(text("文件名前缀", 14, TEXT));
-        gap(storage, 6);
-        storage.addView(prefix);
-        prefix.addTextChangedListener(watcher(s -> prefs.edit().putString("prefix", s).apply()));
-        LinearLayout advanced = card(page, "高级抓取设置");
-        gap(advanced, 10);
-        advanced.addView(text("保存的协议范围", 14, TEXT));
-        fullButton(advanced, "抓取范围：" + (prefs.getInt("uid", -1) < 0 ? "整机 IP" : "选中应用"),
-            false, () -> {
+        preference(storage, "文件名前缀", prefs.getString("prefix", "抓包"), "save",
+            () -> editTextDialog("文件名前缀", prefs.getString("prefix", "抓包"), name -> {
+                SessionLibrary.validLeaf(name, 40);
+                prefs.edit().putString("prefix", name).apply();
+                showTab(3);
+            }));
+        LinearLayout capture = preferencesCard(left, "02", "采集策略");
+        preference(capture, "抓取范围", prefs.getInt("uid", -1) < 0 ? "整机 IP" : "选中应用",
+            "select", () -> {
                 if (CaptureService.active) {
-                    toast("请先停止后切换抓取范围");
+                    toast("请先停止后切换目标");
                     return;
                 }
                 alert()
@@ -2100,78 +2696,83 @@ final class WorkspaceUi extends ContextThemeWrapper {
                     .setNegativeButton("取消", null)
                     .show();
             });
-        int current = prefs.getInt("protocol", 0);
-        Button protocol = button(current == 6 ? "仅 TCP"
-                : current == 17               ? "仅 UDP"
-                                              : "全部 IP 协议",
-            false, () -> {});
-        advanced.addView(protocol, new LinearLayout.LayoutParams(-1, dp(46)));
-        protocol.setOnClickListener(v
-            -> alert()
-                .setTitle("保存的协议范围")
-                .setItems(new String[] {"全部 IP 协议", "仅 TCP", "仅 UDP"},
-                    (d, n) -> {
-                        prefs.edit().putInt("protocol", n == 1 ? 6 : n == 2 ? 17 : 0).apply();
-                        protocol.setText(n == 1 ? "仅 TCP" : n == 2 ? "仅 UDP" : "全部 IP 协议");
-                    })
-                .setNegativeButton("取消", null)
-                .show());
-        fullButton(advanced, "选择接口：" + prefs.getString("ifaceName", "所有接口"), false,
+        preference(capture, "保存协议",
+            prefs.getInt("protocol", 0) == 6        ? "TCP"
+                : prefs.getInt("protocol", 0) == 17 ? "UDP"
+                                                    : "全部 IP",
+            "filter",
+            ()
+                -> alert()
+                    .setTitle("保存协议")
+                    .setItems(new String[] {"全部 IP 协议", "仅 TCP", "仅 UDP"},
+                        (d, n) -> {
+                            prefs.edit().putInt("protocol", n == 1 ? 6 : n == 2 ? 17 : 0).apply();
+                            showTab(3);
+                        })
+                    .setNegativeButton("取消", null)
+                    .show());
+        preference(capture, "采集接口", prefs.getString("ifaceName", "所有接口"), "group",
             () -> interfaces());
-        Switch unknown = new Switch(this);
-        unknown.setText("研究模式：独立保留归属未知包");
-        unknown.setTextColor(TEXT);
-        unknown.setChecked(prefs.getBoolean("keepUnknown", false));
-        unknown.setOnCheckedChangeListener((b, v) -> {
-            prefs.edit().putBoolean("keepUnknown", v).apply();
-            toast(v ? "下次抓包独立保留未知包，可能含其他应用流量" : "下次抓包排除未知归属包");
-        });
-        gap(advanced, 10);
-        advanced.addView(unknown);
-        LinearLayout appearance = card(page, "界面与交互");
-        TextView alphaLabel = text("背景不透明度 " + prefs.getInt("opacity", 86) + "%", 14, TEXT);
-        appearance.addView(alphaLabel);
-        SeekBar opacity = new SeekBar(this);
-        opacity.setMax(50);
-        opacity.setProgress(prefs.getInt("opacity", 86) - 45);
-        appearance.addView(opacity, new LinearLayout.LayoutParams(-1, dp(44)));
-        opacity.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            public void onStartTrackingTouch(SeekBar b) {}
-            public void onStopTrackingTouch(SeekBar b) {}
-            public void onProgressChanged(SeekBar b, int value, boolean user) {
-                if (!user)
-                    return;
-                int alpha = value + 45;
-                prefs.edit().putInt("opacity", alpha).apply();
-                alphaLabel.setText("背景不透明度 " + alpha + "%");
-                applyBackdrop();
-            }
-        });
-        gap(appearance, 10);
-        Switch wake = new Switch(this);
-        wake.setText("熄屏保持抓包（增加耗电）");
-        wake.setTextColor(TEXT);
-        wake.setChecked(prefs.getBoolean("wake", true));
-        wake.setOnCheckedChangeListener((b, v) -> prefs.edit().putBoolean("wake", v).apply());
-        appearance.addView(wake);
-        LinearLayout about = card(page, "工具");
-        fullButton(about, "检查 Root 核心", false, () -> probe());
-        fullButton(about, "导出设备与会话诊断", false, () -> diagnostic());
-        fullButton(about, "结束工具", false, () -> {
-            Runnable exit = () -> {
-                service.exitTool();
-            };
+        preferenceToggle(capture, "独立保留未知归属包", "keepUnknown", false, "save");
+        preferenceToggle(capture, "熄屏保持抓包", "wake", true, "select");
+        LinearLayout appearance = preferencesCard(right, "03", "外观与交互");
+        preference(appearance, "背景不透明度", prefs.getInt("opacity", 86) + "%", "select",
+            () -> opacityDialog());
+        preference(appearance, "收藏与关联", "前往数据页", "save", () -> showTab(1));
+        LinearLayout tools = preferencesCard(right, "04", "诊断与维护");
+        preference(tools, "检查 Root 核心", "运行检查", "refresh", () -> probe());
+        preference(tools, "导出设备诊断", "导出", "import", () -> diagnostic());
+        preference(tools, "管理本地会话", "会话库", "folder", () -> showTab(2));
+        preference(tools, "结束工具", "退出", "close", () -> {
             if (CaptureService.active)
                 alert()
-                    .setTitle("停止抓包并退出？")
-                    .setMessage("现有队列将先写入文件，随后结束工具。")
-                    .setPositiveButton("保存并退出", (d, w) -> exit.run())
+                    .setTitle("停止并退出？")
+                    .setMessage("将先排空并保存抓包文件，再结束工具。")
+                    .setPositiveButton("保存并退出", (d, w) -> service.exitTool())
                     .setNegativeButton("取消", null)
                     .show();
             else
-                exit.run();
+                service.exitTool();
         });
-        gap(page, 12);
+    }
+    private void opacityDialog() {
+        LinearLayout box = col();
+        box.setPadding(dp(14), dp(4), dp(14), dp(8));
+        LinearLayout head = modalHead(box, "背景不透明度");
+        LinearLayout content = modalBody(box);
+        TextView value = text(prefs.getInt("opacity", 86) + "%", 28, ACCENT);
+        value.setGravity(Gravity.CENTER);
+        content.addView(value);
+        SeekBar slider = new SeekBar(this);
+        slider.setMax(50);
+        slider.setProgress(prefs.getInt("opacity", 86) - 45);
+        content.addView(slider, new LinearLayout.LayoutParams(-1, dp(48)));
+        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onStartTrackingTouch(SeekBar bar) {}
+            public void onStopTrackingTouch(SeekBar bar) {}
+            public void onProgressChanged(SeekBar bar, int progress, boolean user) {
+                if (user) {
+                    prefs.edit().putInt("opacity", progress + 45).apply();
+                    value.setText((progress + 45) + "%");
+                    applyBackdrop();
+                    View current = body.findViewWithTag("opacity-value");
+                    if (current instanceof TextView)
+                        ((TextView) current).setText((progress + 45) + "%");
+                }
+            }
+        });
+        Dialog d = dialog("", box);
+        tool(head, "close", "关闭", () -> {
+            d.dismiss();
+            showTab(3);
+        });
+        LinearLayout footer = row();
+        action(footer, "完成", true, () -> {
+            d.dismiss();
+            showTab(3);
+        });
+        box.addView(footer);
+        sizeEditor(d, 240);
     }
     private void interfaces() {
         List<String> names = new ArrayList<>();
@@ -2216,182 +2817,209 @@ final class WorkspaceUi extends ContextThemeWrapper {
     }
     private void pathDialog(File start, boolean files, FolderChosen chosen) {
         LinearLayout box = col();
-        box.setPadding(dp(18), dp(18), dp(18), dp(14));
-        box.addView(text(files ? "选择 PCAP 文件" : "选择保存目录", 21, TEXT));
-        gap(box, 10);
+        box.setPadding(dp(12), dp(4), dp(12), dp(8));
+        LinearLayout head = modalHead(box, files ? "选择 PCAP 文件" : "选择保存目录");
         TextView path = text("", 12, ACCENT);
-        path.setMaxLines(3);
-        box.addView(path);
-        gap(box, 10);
-        LinearLayout tools = row();
-        box.addView(tools);
+        path.setSingleLine();
+        path.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        box.addView(path, new LinearLayout.LayoutParams(-1, dp(24)));
+        LinearLayout toolbar = row();
+        box.addView(toolbar);
+        FrameLayout area = new FrameLayout(this);
         ListView list = new ListView(this);
-        box.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
+        TextView empty = text("读取中…", 13, MUTED);
+        empty.setGravity(Gravity.CENTER);
+        area.addView(list, new FrameLayout.LayoutParams(-1, -1));
+        area.addView(empty, new FrameLayout.LayoutParams(-1, -1));
+        list.setEmptyView(empty);
+        box.addView(area, new LinearLayout.LayoutParams(-1, 0, 1));
         Dialog d = dialog("", box);
+        tool(head, "close", "关闭文件选择", () -> d.dismiss());
         File[] current = {start};
-        List<File> dirs = new ArrayList<>();
-        boolean[] sortByTime = {false};
-        final Runnable[] scan = {null};
+        List<File> entries = new ArrayList<>();
+        boolean[] byTime = {false};
+        int[] scanToken = {0};
+        Runnable[] scan = {null};
         scan[0] = () -> {
-            File here = current[0];
-            path.setText(here.getAbsolutePath());
+            File folder = current[0];
+            final boolean orderByTime = byTime[0];
+            int token = ++scanToken[0];
+            path.setText(folder.getAbsolutePath());
+            empty.setText("读取中…");
             io.execute(() -> {
-                File[] children = here.listFiles();
+                File[] children = folder.listFiles();
                 List<File> found = new ArrayList<>();
                 if (children != null)
                     for (File f : children)
-                        if (f.isDirectory() || (files && f.isFile()))
+                        if (f.isDirectory() || files && f.isFile())
                             found.add(f);
-                found.sort((a, b) -> {
-                    if (a.isDirectory() != b.isDirectory())
-                        return a.isDirectory() ? -1 : 1;
-                    return sortByTime[0] && a.lastModified() != b.lastModified()
-                        ? Long.compare(b.lastModified(), a.lastModified())
-                        : a.getName().compareToIgnoreCase(b.getName());
-                });
+                found.sort((x, y)
+                               -> x.isDirectory() != y.isDirectory() ? (x.isDirectory() ? -1 : 1)
+                        : orderByTime && x.lastModified() != y.lastModified()
+                        ? Long.compare(y.lastModified(), x.lastModified())
+                        : x.getName().compareToIgnoreCase(y.getName()));
                 post(() -> {
-                    if (!d.isShowing() || !current[0].equals(here))
+                    if (!d.isShowing() || token != scanToken[0])
                         return;
-                    dirs.clear();
-                    dirs.addAll(found);
-                    List<String> labels = new ArrayList<>();
-                    for (File f : dirs) labels.add((f.isDirectory() ? "▸  " : "▤  ") + f.getName());
-                    list.setAdapter(simpleAdapter(labels));
-                    if (children == null)
-                        toast("当前目录不可读取，请授权内部存储访问或选择应用目录");
+                    entries.clear();
+                    entries.addAll(found);
+                    list.setAdapter(new BaseAdapter() {
+                        public int getCount() {
+                            return entries.size();
+                        }
+                        public Object getItem(int i) {
+                            return entries.get(i);
+                        }
+                        public long getItemId(int i) {
+                            return i;
+                        }
+                        public View getView(int i, View cv, ViewGroup parent) {
+                            File f = entries.get(i);
+                            LinearLayout line = row();
+                            line.setPadding(dp(6), dp(5), dp(6), dp(5));
+                            TextView symbol = text(f.isDirectory() ? "▸" : "▤", 18, ACCENT);
+                            line.addView(symbol, new LinearLayout.LayoutParams(dp(28), dp(32)));
+                            LinearLayout labels = col();
+                            TextView name = text(f.getName(), 14, TEXT);
+                            name.setSingleLine();
+                            name.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+                            labels.addView(name);
+                            labels.addView(
+                                text(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT)
+                                            .format(new Date(f.lastModified()))
+                                        + (f.isDirectory()
+                                                ? ""
+                                                : " · " + PacketStore.formatBytes(f.length())),
+                                    10, MUTED));
+                            line.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+                            return line;
+                        }
+                    });
+                    empty.setText(
+                        children == null ? "无法读取此目录 · 点击查看位置与权限" : "此目录为空");
                 });
             });
         };
-        tools.addView(button("新建文件夹", false, () -> nameDialog(current[0], scan[0])),
-            new LinearLayout.LayoutParams(0, dp(46), 1));
-        Button sort = button("按时间", false, () -> {
-            sortByTime[0] = !sortByTime[0];
-            scan[0].run();
-        });
-        tools.addView(sort, new LinearLayout.LayoutParams(0, dp(46), 1));
-        sort.setOnClickListener(v -> {
-            sortByTime[0] = !sortByTime[0];
-            sort.setText(sortByTime[0] ? "按名称" : "按时间");
-            scan[0].run();
-        });
-        tools.addView(button("上一级 ↑", false, () -> {
-            File parent = current[0].getParentFile();
-            if (parent != null) {
-                current[0] = parent;
+        Runnable locations = ()
+            -> alert()
+                   .setTitle("位置与访问")
+                   .setItems(new String[] {"内部存储", "应用文件目录", "输入目录路径",
+                                 "授予共享存储访问"},
+                       (x, n) -> {
+                           if (n < 2) {
+                               current[0] = n == 0 ? Environment.getExternalStorageDirectory()
+                                                   : getExternalFilesDir(null);
+                               scan[0].run();
+                           } else if (n == 2)
+                               editTextDialog("转到目录", current[0].getAbsolutePath(), value -> {
+                                   File target = new File(value);
+                                   if (!target.isDirectory())
+                                       throw new IOException("目录不存在或不可访问");
+                                   current[0] = target;
+                                   scan[0].run();
+                               });
+                           else if (Environment.isExternalStorageManager())
+                               toast("已获得共享存储访问权限");
+                           else
+                               startActivity(new Intent(
+                                   Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                   Uri.parse("package:" + getPackageName())));
+                       })
+                   .setNegativeButton("取消", null)
+                   .show();
+        tool(toolbar, "new", "新建文件夹", () -> nameDialog(current[0], scan[0]));
+        tool(toolbar, "up", "上一级目录", () -> {
+            File up = current[0].getParentFile();
+            if (up != null) {
+                current[0] = up;
                 scan[0].run();
             }
-        }), new LinearLayout.LayoutParams(0, dp(46), 1));
-        list.setOnItemClickListener((a, v, p, id) -> {
-            File picked = dirs.get(p);
-            if (picked.isDirectory()) {
-                current[0] = picked;
+        });
+        tool(toolbar, "sort", "切换名称 / 时间排序", () -> {
+            byTime[0] = !byTime[0];
+            scan[0].run();
+        });
+        tool(toolbar, "folder", "切换位置与权限", locations);
+        empty.setOnClickListener(v -> locations.run());
+        path.setOnClickListener(v -> locations.run());
+        list.setOnItemClickListener((a, v, i, id) -> {
+            File f = entries.get(i);
+            if (f.isDirectory()) {
+                current[0] = f;
                 scan[0].run();
             } else if (files) {
                 d.dismiss();
-                chosen.choose(picked);
+                chosen.choose(f);
             }
         });
-        list.setOnItemLongClickListener((a, v, p, id) -> {
-            if (CaptureService.active) {
-                toast("抓包期间请勿重命名目录，避免影响会话路径");
-                return true;
-            }
-            nameDialog(current[0], dirs.get(p), scan[0]);
+        list.setOnItemLongClickListener((a, v, i, id) -> {
+            if (CaptureService.active)
+                toast("抓包期间不能重命名文件或目录");
+            else
+                nameDialog(current[0], entries.get(i), scan[0]);
             return true;
         });
-        fullButton(box, "授权内部存储访问", false, () -> {
-            if (Environment.isExternalStorageManager()) {
-                toast("已获得内部存储文件访问权限");
-                current[0] = Environment.getExternalStorageDirectory();
-                scan[0].run();
-            } else
-                startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                    Uri.parse("package:" + getPackageName())));
-        });
-        fullButton(box, "转到内部存储", false, () -> {
-            current[0] = Environment.getExternalStorageDirectory();
-            scan[0].run();
-        });
-        if (!files)
-            fullButton(box, "选定当前目录", true, () -> {
+        if (!files) {
+            LinearLayout footer = row();
+            action(footer, "取消", false, () -> d.dismiss());
+            action(footer, "使用此目录", true, () -> {
                 File f = current[0];
-                if (!f.exists() && !f.mkdirs()) {
-                    toast("无法创建当前目录");
-                    return;
-                }
                 if (!f.isDirectory() || !f.canWrite()) {
-                    toast("此目录不可写，请选择其他目录或授予文件访问权限");
+                    toast("目录不可写，请选择其他位置或授予访问权限");
                     return;
                 }
                 chosen.choose(f);
                 d.dismiss();
             });
-        fullButton(box, "取消", false, () -> d.dismiss());
+            box.addView(footer);
+        }
         sizeDialog(d, true);
         scan[0].run();
+    }
+    private interface TextSaved {
+        void save(String value) throws Exception;
+    }
+    private void editTextDialog(String title, String value, TextSaved save) {
+        LinearLayout box = col();
+        box.setPadding(dp(14), dp(4), dp(14), dp(8));
+        LinearLayout head = modalHead(box, title);
+        LinearLayout content = modalBody(box);
+        EditText input = input(title);
+        input.setText(value);
+        input.selectAll();
+        content.addView(input);
+        Dialog d = dialog("", box);
+        tool(head, "close", "关闭", () -> d.dismiss());
+        LinearLayout footer = row();
+        action(footer, "取消", false, () -> d.dismiss());
+        action(footer, "确定", true, () -> {
+            try {
+                save.save(input.getText().toString().trim());
+                d.dismiss();
+            } catch (Exception e) {
+                input.setError(e.getMessage());
+            }
+        });
+        box.addView(footer);
+        sizeEditor(d, 200);
     }
     private void nameDialog(File parent, Runnable refresh) {
         nameDialog(parent, null, refresh);
     }
     private void nameDialog(File parent, File original, Runnable refresh) {
-        EditText name = input("文件夹名称");
-        if (original != null) {
-            name.setText(original.getName());
-            name.selectAll();
-        }
-        LinearLayout box = col();
-        box.setPadding(dp(22), dp(12), dp(22), dp(4));
-        box.addView(name);
-        AlertDialog d = alert()
-                            .setTitle(original == null ? "新建文件夹" : "重命名文件夹")
-                            .setView(box)
-                            .setPositiveButton(original == null ? "创建" : "重命名", null)
-                            .setNegativeButton("取消", null)
-                            .create();
-        d.setCanceledOnTouchOutside(true);
-        d.setOnShowListener(v -> {
-            d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(b -> {
-                String s = name.getText().toString().trim();
-                if (s.isEmpty() || s.equals(".") || s.equals("..") || s.contains("/")
-                    || s.contains("\\") || s.indexOf('\0') >= 0) {
-                    name.setError("请输入有效的单层文件夹名");
-                    return;
-                }
-                File f = new File(parent, s);
-                if (f.exists()) {
-                    name.setError("同名目录或文件已经存在");
-                    return;
-                }
-                if (!(original == null ? f.mkdir() : original.renameTo(f))) {
-                    name.setError("操作失败，请检查目录写入权限");
-                    return;
-                }
-                d.dismiss();
+        editTextDialog(original == null ? "新建文件夹" : "重命名",
+            original == null ? "" : original.getName(), value -> {
+                SessionLibrary.validLeaf(value, 180);
+                if (original != null && CaptureService.active)
+                    throw new IOException("请先停止抓包再更改文件目录");
+                File target = new File(parent, value);
+                if (target.exists())
+                    throw new IOException("已存在同名项目");
+                boolean ok = original == null ? target.mkdir() : original.renameTo(target);
+                if (!ok)
+                    throw new IOException("操作失败，请检查目录权限");
                 refresh.run();
             });
-            name.requestFocus();
-            ViewTreeObserver.OnWindowFocusChangeListener focus =
-                new ViewTreeObserver.OnWindowFocusChangeListener() {
-                    public void onWindowFocusChanged(boolean focused) {
-                        if (!focused || !d.isShowing())
-                            return;
-                        name.getViewTreeObserver().removeOnWindowFocusChangeListener(this);
-                        name.post(()
-                                      -> getSystemService(InputMethodManager.class)
-                                          .showSoftInput(name, InputMethodManager.SHOW_IMPLICIT));
-                    }
-                };
-            name.getViewTreeObserver().addOnWindowFocusChangeListener(focus);
-            if (name.hasWindowFocus())
-                focus.onWindowFocusChanged(true);
-        });
-        d.show();
-        if (d.getWindow() != null) {
-            d.getWindow().setBackgroundDrawable(background(0xff282a35, 20));
-            d.getWindow().setSoftInputMode(
-                WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
-                | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-        }
     }
     private void demo() {
         io.execute(() -> {
@@ -2408,27 +3036,32 @@ final class WorkspaceUi extends ContextThemeWrapper {
         });
     }
     private void probe() {
-        ProgressDialog d = progress("检查 Root", "请留意 Root 管理器的授权提示…", true);
-        io.execute(() -> {
+        LinearLayout box = col();
+        box.setPadding(dp(14), dp(6), dp(14), dp(10));
+        LinearLayout head = modalHead(box, "Root 与抓包核心");
+        LinearLayout content = modalBody(box);
+        TextView result = text("检查中…", 13, MUTED);
+        result.setTextIsSelectable(true);
+        content.addView(result);
+        Dialog d = dialog("", box);
+        tool(head, "close", "关闭检查", () -> d.dismiss());
+        sizeEditor(d, 260);
+        processIo.execute(() -> {
             try {
-                StringBuilder s = new StringBuilder();
-                for (String line : CaptureService.command(this, "probe")) {
-                    try {
-                        s.append(new JSONObject(line).optString("message", line)).append('\n');
-                    } catch (Exception ignored) {
-                        s.append(line).append('\n');
+                String report = catalog.probe();
+                post(() -> {
+                    if (d.isShowing()) {
+                        result.setText("检查通过\n\n" + report);
+                        result.setTextColor(TEXT);
                     }
-                }
-                post(()
-                         -> alert()
-                             .setTitle("Root 与抓包 socket 检查通过")
-                             .setMessage(s.toString())
-                             .setPositiveButton("关闭", null)
-                             .show());
+                });
             } catch (Exception e) {
-                post(() -> error("Root 检查失败", e));
-            } finally {
-                post(() -> d.dismiss());
+                post(() -> {
+                    if (d.isShowing()) {
+                        result.setText("检查未通过\n\n" + e.getMessage());
+                        result.setTextColor(RED);
+                    }
+                });
             }
         });
     }

@@ -954,6 +954,18 @@ int main(int argc, char** argv) {
         std::string request;
         while (running && std::getline(std::cin, request)) {
             if (request == "quit") break;
+            if (request == "probe") {
+                int fd = socket(AF_PACKET, SOCK_DGRAM | SOCK_CLOEXEC, htons(ETH_P_ALL));
+                if (fd < 0)
+                    event("error",
+                          std::string("已有 Root，但抓包 socket 不可用: ") + strerror(errno));
+                else {
+                    close(fd);
+                    event("ready", "Root 核心及 AF_PACKET 抓包 socket 可用");
+                }
+                event("catalog-end", "done");
+                continue;
+            }
             if (request != "list") continue;
             processes(false);
             event("catalog-end", "done");

@@ -45,13 +45,63 @@ final class ToolIcon extends View {
                 c.drawPath(a, p);
                 break;
             case "save":
-                a.moveTo(6, 3);
-                a.lineTo(18, 3);
-                a.lineTo(18, 21);
-                a.lineTo(12, 17);
-                a.lineTo(6, 21);
+                a.moveTo(5, 3);
+                a.lineTo(17, 3);
+                a.lineTo(21, 7);
+                a.lineTo(21, 19);
+                a.quadTo(21, 21, 19, 21);
+                a.lineTo(5, 21);
+                a.quadTo(3, 21, 3, 19);
+                a.lineTo(3, 5);
+                a.quadTo(3, 3, 5, 3);
                 a.close();
                 c.drawPath(a, p);
+                c.drawRoundRect(7, 3, 15, 9, 1, 1, p);
+                c.drawRoundRect(7, 13, 17, 21, 1, 1, p);
+                break;
+            case "folder":
+            case "new":
+                a.moveTo(3, 7);
+                a.lineTo(3, 20);
+                a.lineTo(21, 20);
+                a.lineTo(21, 7);
+                a.lineTo(12, 7);
+                a.lineTo(10, 4);
+                a.lineTo(3, 4);
+                a.close();
+                c.drawPath(a, p);
+                if (kind.equals("new")) {
+                    c.drawLine(8, 13, 16, 13, p);
+                    c.drawLine(12, 9, 12, 17, p);
+                }
+                break;
+            case "up":
+                c.drawLine(12, 21, 12, 4, p);
+                c.drawLine(6, 10, 12, 4, p);
+                c.drawLine(12, 4, 18, 10, p);
+                break;
+            case "import":
+                c.drawLine(12, 3, 12, 16, p);
+                c.drawLine(7, 11, 12, 16, p);
+                c.drawLine(12, 16, 17, 11, p);
+                c.drawLine(4, 16, 4, 21, p);
+                c.drawLine(4, 21, 20, 21, p);
+                c.drawLine(20, 21, 20, 16, p);
+                break;
+            case "sort":
+                c.drawLine(3, 5, 14, 5, p);
+                c.drawLine(3, 11, 11, 11, p);
+                c.drawLine(3, 17, 8, 17, p);
+                c.drawLine(18, 4, 18, 21, p);
+                c.drawLine(14, 17, 18, 21, p);
+                c.drawLine(18, 21, 22, 17, p);
+                break;
+            case "trash":
+                c.drawLine(4, 6, 20, 6, p);
+                c.drawLine(9, 3, 15, 3, p);
+                c.drawRoundRect(6, 6, 18, 21, 2, 2, p);
+                c.drawLine(10, 10, 10, 17, p);
+                c.drawLine(14, 10, 14, 17, p);
                 break;
             case "compare":
                 c.drawRoundRect(2, 5, 10, 19, 2, 2, p);

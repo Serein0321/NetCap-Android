@@ -1,5 +1,18 @@
 # 验证记录
 
+## 0.3.1 会话库与界面完善（2026-10-26）
+
+- APK：`NetCap-0.3.1-library-test.apk`，3,023,705 字节，versionCode=6，最低 API33 / 目标 API36。
+- SHA-256：`046A8BC6406FC5C476FB573D14A599B51124F348159EEF78ECFFED7FB5EB271D`。
+- SDK36 / NDK29 双 ABI 构建及 APK 签名验证通过，包内双 ABI 核心与构建产物逐字节一致。签名证书与旧版一致：`26005ecac9086b722b702570edac285ea14b5bdb4ca47d0f3c60055dd1a9ac84`。
+- 本轮主机测试：原有数据回归5289项、新增会话管理/安全区域几何1650项断言通过。覆盖排序、改名、分组、递归删除、活动会话/根目录/越界保护、坏元信息和左右挖孔/系统栏/IME组合。
+- Windows 无创建符号链接权限，该运行测试明确跳过；未将静态不跟随链接策略当成运行验证。
+- 本轮源码比较：接收循环和写盘Sink、PacketStore、PacketFilter、PacketNotes、IntegrityReport相对0.3.0未变。原生只新增常驻通道的固定probe请求分支；原生二进制因此有变化。
+- 本轮没有启动虚拟机、安装手机或运行新的Android/Root采集测试。横屏弹窗、IME、文件目录授权与物理删除、Root通道和设置显示均待手机验收；历史0.3.0回环测试不代表本轮新增设备验证。
+- 保留开发测试签名和显式自检入口；未自动上传GitHub或创建Release。详见[LIBRARY.md](LIBRARY.md)。
+
+以下为历史版本验证记录。
+
 ## 0.3.0 数据工作台与可靠性（2026-10-26）
 
 - APK：`NetCap-0.3.0-workbench-test.apk`，3,007,321 字节，versionCode=5，最低 API33 / 目标 API36。
