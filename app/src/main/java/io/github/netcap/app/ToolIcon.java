@@ -4,11 +4,13 @@ import android.graphics.*;
 import android.view.View;
 final class ToolIcon extends View {
     final String kind;
+    final ThemePalette theme;
     final Paint p = new Paint(3);
     boolean active;
     ToolIcon(Context c, String kind, String title, Runnable action) {
         super(c);
         this.kind = kind;
+        theme = ThemeUi.palette(c);
         setContentDescription(title);
         setTooltipText(title);
         setFocusable(true);
@@ -18,7 +20,7 @@ final class ToolIcon extends View {
     @Override
     protected void onDraw(Canvas c) {
         super.onDraw(c);
-        p.setColor(isEnabled() ? 0xffb3c5ff : 0xff626879);
+        p.setColor(isEnabled() ? theme.accent : theme.disabled);
         p.setStyle(Paint.Style.STROKE);
         p.setStrokeWidth(1.7f);
         p.setStrokeCap(Paint.Cap.ROUND);
@@ -30,6 +32,53 @@ final class ToolIcon extends View {
         c.translate(-12, -12);
         Path a = new Path();
         switch (kind) {
+            case "palette":
+                c.drawCircle(12, 12, 9, p);
+                c.drawCircle(9, 8, 1, p);
+                c.drawCircle(15, 8, 1, p);
+                c.drawCircle(7, 13, 1, p);
+                c.drawCircle(14, 16, 2, p);
+                break;
+            case "tls":
+                a.moveTo(12, 2);
+                a.lineTo(21, 6);
+                a.lineTo(20, 14);
+                a.quadTo(18, 19, 12, 22);
+                a.quadTo(6, 19, 4, 14);
+                a.lineTo(3, 6);
+                a.close();
+                c.drawPath(a, p);
+                c.drawLine(8, 12, 11, 15, p);
+                c.drawLine(11, 15, 16, 9, p);
+                break;
+            case "copy":
+                c.drawRoundRect(7, 7, 21, 21, 2, 2, p);
+                c.drawLine(3, 16, 3, 3, p);
+                c.drawLine(3, 3, 16, 3, p);
+                break;
+            case "cut":
+                c.drawCircle(6, 18, 3, p);
+                c.drawCircle(18, 18, 3, p);
+                c.drawLine(8, 16, 20, 3, p);
+                c.drawLine(16, 16, 4, 3, p);
+                break;
+            case "paste":
+                c.drawRoundRect(5, 5, 20, 22, 2, 2, p);
+                c.drawRoundRect(9, 2, 16, 7, 1, 1, p);
+                c.drawLine(9, 12, 16, 12, p);
+                c.drawLine(9, 16, 15, 16, p);
+                break;
+            case "file":
+                a.moveTo(5, 2);
+                a.lineTo(14, 2);
+                a.lineTo(20, 8);
+                a.lineTo(20, 22);
+                a.lineTo(5, 22);
+                a.close();
+                c.drawPath(a, p);
+                c.drawLine(14, 2, 14, 8, p);
+                c.drawLine(14, 8, 20, 8, p);
+                break;
             case "search":
                 c.drawCircle(10, 10, 6, p);
                 c.drawLine(15, 15, 21, 21, p);
@@ -142,7 +191,7 @@ final class ToolIcon extends View {
         }
         c.restore();
         if (active) {
-            p.setColor(0xff80d5c2);
+            p.setColor(theme.outgoing);
             p.setStyle(Paint.Style.FILL);
             c.drawCircle(getWidth() * .8f, getHeight() * .2f, 2.5f * s, p);
         }

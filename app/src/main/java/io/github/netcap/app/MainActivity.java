@@ -17,6 +17,7 @@ import android.widget.*;
 /** 仅负责启动和系统权限；所有业务操作在 Service 的系统悬浮窗口里。 */
 public final class MainActivity extends Activity {
     private boolean awaitingOverlay;
+    private ThemePalette palette;
     private Button launch;
     private TextView hint;
     private int dp(int n) {
@@ -24,13 +25,15 @@ public final class MainActivity extends Activity {
     }
     @Override
     public void onCreate(Bundle state) {
+        setTheme(ThemeUi.app(this));
         super.onCreate(state);
+        palette = ThemeUi.palette(this);
         awaitingOverlay = state != null && state.getBoolean("awaitingOverlay");
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setGravity(Gravity.CENTER);
         root.setPadding(dp(32), dp(32), dp(32), dp(32));
-        root.setBackgroundColor(0xff14151d);
+        root.setBackgroundColor(palette.bg);
         root.setOnApplyWindowInsetsListener((v, in) -> {
             android.graphics.Insets bars =
                 in.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
@@ -41,20 +44,20 @@ public final class MainActivity extends Activity {
         TextView symbol = new TextView(this);
         symbol.setText("⇄");
         symbol.setTextSize(56);
-        symbol.setTextColor(0xffb3c5ff);
+        symbol.setTextColor(palette.accent);
         symbol.setGravity(Gravity.CENTER);
         root.addView(symbol);
         TextView title = new TextView(this);
         title.setText("NetCap");
         title.setTextSize(26);
-        title.setTextColor(0xfff1f2fa);
+        title.setTextColor(palette.text);
         title.setTypeface(null, Typeface.BOLD);
         title.setGravity(Gravity.CENTER);
         root.addView(title);
         TextView description = new TextView(this);
         description.setText("在当前应用上方，观察每一次通信");
         description.setTextSize(13);
-        description.setTextColor(0xffaeb3c8);
+        description.setTextColor(palette.muted);
         description.setGravity(Gravity.CENTER);
         description.setPadding(0, dp(12), 0, dp(36));
         root.addView(description);
@@ -62,16 +65,16 @@ public final class MainActivity extends Activity {
         launch.setText("启动");
         launch.setTextSize(18);
         launch.setAllCaps(false);
-        launch.setTextColor(0xff202b4b);
+        launch.setTextColor(palette.onAccent);
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(0xffb3c5ff);
+        bg.setColor(palette.accent);
         bg.setCornerRadius(dp(16));
         launch.setBackground(bg);
         root.addView(launch, new LinearLayout.LayoutParams(-1, dp(58)));
         launch.setOnClickListener(v -> begin());
         hint = new TextView(this);
         hint.setTextSize(12);
-        hint.setTextColor(0xffaeb3c8);
+        hint.setTextColor(palette.muted);
         hint.setGravity(Gravity.CENTER);
         hint.setPadding(0, dp(20), 0, 0);
         root.addView(hint);
@@ -81,6 +84,10 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (!palette.id.equals(ThemeUi.palette(this).id)) {
+            recreate();
+            return;
+        }
         hint.setText(CaptureService.isRunning() ? "工具已启动 · 点击悬浮球展开工作台"
                                                 : "启动后显示悬浮球 · 真实抓包需要 Root");
         launch.setText(CaptureService.isRunning() ? "显示悬浮球" : "启动");

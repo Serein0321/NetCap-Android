@@ -22,9 +22,22 @@ import org.json.*;
 
 /** Service 所有的真正系统悬浮工作台；不启动 Activity，不持有启动页。 */
 final class WorkspaceUi extends ContextThemeWrapper {
-    private static final int BG = 0xff10121a, SURFACE = 0xf211131b, EDGE = 0xff353947,
-                             TEXT = 0xfff1f2fa, MUTED = 0xffb3b8cc, ACCENT = 0xffb3c5ff,
-                             AMBER = 0xffffcc80, RED = 0xffff8e92;
+    private ThemePalette palette;
+    private int BG, SURFACE, EDGE, TEXT, MUTED, ACCENT, AMBER, RED;
+    private void loadPalette() {
+        palette = ThemeUi.palette(this);
+        BG = palette.bg;
+        SURFACE = palette.surface;
+        EDGE = palette.edge;
+        TEXT = palette.text;
+        MUTED = palette.muted;
+        ACCENT = palette.accent;
+        AMBER = palette.warning;
+        RED = palette.error;
+        android.content.res.Resources.Theme fresh = getResources().newTheme();
+        fresh.applyStyle(ThemeUi.overlay(this), true);
+        getTheme().setTo(fresh);
+    }
     private final CaptureService service;
     private final Dialog workspace;
     private final android.window.OnBackInvokedCallback workspaceBack;
@@ -75,15 +88,20 @@ final class WorkspaceUi extends ContextThemeWrapper {
     private ListView packetList;
     private final List<PacketStore.Record> records = new ArrayList<>();
     private final List<Dialog> openDialogs = new ArrayList<>();
+    private final Map<Dialog, Runnable> dialogBackActions = new HashMap<>();
     private final Set<Dialog> fixedDialogs = new HashSet<>();
     private final Map<Dialog, Integer> editorHeights = new HashMap<>();
     private final Set<Dialog> fitting = new HashSet<>();
     private final Set<File> historySelection = new LinkedHashSet<>();
     private boolean historyManaging;
-    private String historyGroup = "";
+    private File browserRoot, browserDir;
+    private String browserBase = "";
+    private final List<File> fileClipboard = new ArrayList<>();
+    private boolean clipboardMove;
+    private List<WorkspaceFiles.Item> fileEntries = new ArrayList<>();
     private int historyEpoch;
     private volatile int relatedEpoch;
-    private List<SessionLibrary.Entry> libraryEntries = new ArrayList<>();
+
     private BaseAdapter packetAdapter;
     private long lastRefresh = 0;
     private final Runnable tick = new Runnable() {
@@ -104,9 +122,10 @@ final class WorkspaceUi extends ContextThemeWrapper {
                   owner.getSystemService(android.hardware.display.DisplayManager.class)
                       .getDisplay(Display.DEFAULT_DISPLAY),
                   WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null),
-            R.style.OverlayTheme);
+            ThemeUi.overlay(owner));
         service = owner;
         prefs = getSharedPreferences("settings", 0);
+        loadPalette();
         catalog = new ProcessCatalog(this);
         prefs.edit().remove("screenshots").apply();
         if (!prefs.getBoolean("refinedDark", false))
@@ -245,7 +264,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
             frame.x = frame.y = 0;
             w.setAttributes(frame);
             w.setWindowAnimations(0);
-            w.setBackgroundDrawable(background(0xff282a35, 22));
+            w.setBackgroundDrawable(background(palette.modal, 22));
             w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
             w.setDimAmount(.45f);
         } else {
@@ -323,7 +342,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
         v.setText(name);
         v.setTextSize(14);
         v.setAllCaps(false);
-        v.setTextColor(primary ? 0xff062e2d : TEXT);
+        v.setTextColor(primary ? palette.onAccent : TEXT);
         v.setBackground(background(primary ? ACCENT : BG, 10));
         v.setMinHeight(dp(48));
         v.setPadding(dp(14), dp(5), dp(14), dp(5));
@@ -378,7 +397,8 @@ final class WorkspaceUi extends ContextThemeWrapper {
         for (Dialog d : windows) d.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
     }
     private void applyBackdrop() {
-        shell.setBackgroundColor((prefs.getInt("opacity", 86) * 255 / 100 << 24) | 0x1b1d25);
+        shell.setBackgroundColor(
+            (prefs.getInt("opacity", 86) * 255 / 100 << 24) | (palette.workspace & 0xffffff));
     }
     private boolean landscape() {
         android.graphics.Rect r = getWindowManager().getCurrentWindowMetrics().getBounds();
@@ -405,7 +425,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
         processIcon = new ImageView(this);
         iconPackage = null;
         processIcon.setPadding(dp(4), dp(4), dp(4), dp(4));
-        processIcon.setBackground(background(0x503e4357, 12));
+        processIcon.setBackground(background(palette.active, 12));
         processIcon.setContentDescription("选择应用进程");
         processIcon.setOnClickListener(v -> processDialog());
         header.addView(processIcon, new LinearLayout.LayoutParams(dp(40), dp(40)));
@@ -431,7 +451,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
         processRow.addView(processMemory);
         shell.addView(processRow);
         View divider = new View(this);
-        divider.setBackgroundColor(0x807e879e);
+        divider.setBackgroundColor(EDGE);
         shell.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
         gap(shell, 4);
         body = new FrameLayout(this);
@@ -456,7 +476,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
             t.setGravity(Gravity.CENTER);
             t.setTypeface(null, Typeface.BOLD);
             if (i == tab)
-                t.setBackground(background(0x404d5e91, 8));
+                t.setBackground(background(palette.active, 8));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1);
             lp.setMargins(dp(2), 0, dp(2), 0);
             nav.addView(t, lp);
@@ -669,7 +689,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
                        .putExtra("iface", prefs.getInt("iface", 0));
         try {
             startForegroundService(i);
-            ui.postDelayed(() -> updateStatus(), 200);
+            service.collapseWorkspace();
         } catch (Exception e) {
             error("启动失败", e);
         }
@@ -688,7 +708,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
         d.setCanceledOnTouchOutside(true);
         Window w = d.getWindow();
         if (w != null) {
-            w.setBackgroundDrawable(background(0xff282a35, 22));
+            w.setBackgroundDrawable(background(palette.modal, 22));
         }
         return d;
     }
@@ -699,13 +719,17 @@ final class WorkspaceUi extends ContextThemeWrapper {
             openDialogs.add(d);
             d.setOnDismissListener(x -> {
                 openDialogs.remove(d);
+                dialogBackActions.remove(d);
                 fixedDialogs.remove(d);
                 editorHeights.remove(d);
                 fitting.remove(d);
             });
             View decor = d.getWindow().getDecorView();
             android.window.OnBackInvokedCallback callback = () -> back(d, () -> {
-                if (!fixedDialogs.contains(d))
+                Runnable custom = dialogBackActions.get(d);
+                if (custom != null)
+                    custom.run();
+                else if (!fixedDialogs.contains(d))
                     d.cancel();
             });
             decor.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
@@ -736,7 +760,10 @@ final class WorkspaceUi extends ContextThemeWrapper {
             d.setOnKeyListener((dlg, key, event) -> {
                 if (key == KeyEvent.KEYCODE_BACK && event.getAction() == KeyEvent.ACTION_UP) {
                     back(d, () -> {
-                        if (!fixedDialogs.contains(d))
+                        Runnable custom = dialogBackActions.get(d);
+                        if (custom != null)
+                            custom.run();
+                        else if (!fixedDialogs.contains(d))
                             d.cancel();
                     });
                     return true;
@@ -842,7 +869,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
         if (primary)
             b.setBackground(background(ACCENT, 10));
         if (primary)
-            b.setTextColor(0xff172134);
+            b.setTextColor(palette.onAccent);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(40), 1);
         lp.setMargins(dp(2), dp(3), dp(2), 0);
         row.addView(b, lp);
@@ -1077,7 +1104,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
             TextView badge = text("0", 10, TEXT);
             badge.setGravity(Gravity.CENTER);
             badge.setPadding(dp(5), 0, dp(5), 0);
-            badge.setBackground(background(0xff424f70, 9));
+            badge.setBackground(background(palette.badge, 9));
             LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(-2, dp(19));
             bl.leftMargin = dp(5);
             segment.addView(badge, bl);
@@ -1113,7 +1140,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
         page.addView(bar);
         FrameLayout area = new FrameLayout(this);
         packetList = new ListView(this);
-        packetList.setDivider(new ColorDrawable(0x30515a70));
+        packetList.setDivider(new ColorDrawable(EDGE));
         packetList.setDividerHeight(dp(1));
         packetList.setClipToPadding(false);
         packetList.setFastScrollEnabled(false);
@@ -1202,12 +1229,12 @@ final class WorkspaceUi extends ContextThemeWrapper {
                         ? alias
                         : direction + r.protocol() + "  #" + r.id + (alias != null ? " ★" : ""));
                 h.meta.setTypeface(null, named ? Typeface.BOLD : Typeface.NORMAL);
-                h.meta.setTextColor(named ? TEXT : r.dir == 1 ? 0xff80d5c2 : ACCENT);
+                h.meta.setTextColor(named ? TEXT : r.dir == 1 ? palette.outgoing : ACCENT);
                 h.stamp.setText(landscape() ? direction + r.protocol() + " · " + r.time()
                                             : r.time() + " · " + PacketStore.formatBytes(r.caplen));
                 h.route.setText(r.route());
                 h.size.setText(r.caplen + " B  #" + r.id);
-                convert.setBackgroundColor(checked ? 0xe52a344a : SURFACE);
+                convert.setBackgroundColor(checked ? palette.active : SURFACE);
                 return convert;
             }
         };
@@ -1272,7 +1299,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
             TextView v = viewTabs.get(i);
             v.setTextColor(i == dataView ? TEXT : MUTED);
             ((View) v.getParent())
-                .setBackground(background(i == dataView ? 0xff303b55 : 0x0010121a, 8));
+                .setBackground(background(i == dataView ? palette.active : 0x00000000, 8));
             TextView badge = viewBadges.get(i);
             badge.setText(counts[i] == -2 ? "!" : counts[i] < 0 ? "…" : "" + counts[i]);
             badge.setVisibility(View.VISIBLE);
@@ -1763,6 +1790,8 @@ final class WorkspaceUi extends ContextThemeWrapper {
         HexDumpView hex = new HexDumpView(this);
         box.addView(sc, new LinearLayout.LayoutParams(-1, 0, 1));
         Dialog d = dialog("", box);
+        tool(head, "save", "保存此记录",
+            () -> changeNotes(Collections.singleton(r.id), false, null));
         tool(head, "close", "关闭详情", () -> d.dismiss());
         sizeDialog(d, true);
         io.execute(() -> {
@@ -1775,16 +1804,28 @@ final class WorkspaceUi extends ContextThemeWrapper {
                     hex.setBytes(raw);
                     sc.removeAllViews();
                     sc.addView(hex);
-                    for (String label : new String[] {"原始字节", "可读内容", "网络字段", "保存"}) {
+                    LinearLayout tls = col();
+                    boolean[] inspecting = {false};
+                    List<Button> tabs = new ArrayList<>();
+                    for (String label : r.proto == 6
+                            ? new String[] {"原始字节", "可读内容", "网络字段", "TLS 连接"}
+                            : new String[] {"原始字节", "可读内容", "网络字段"}) {
                         Button b = compactButton(label, () -> {
-                            if (label.equals("保存")) {
-                                changeNotes(Collections.singleton(r.id), false, null);
-                                return;
+                            for (Button t : tabs) {
+                                boolean active = label.contentEquals(t.getText());
+                                t.setTextColor(active ? ACCENT : MUTED);
+                                t.setBackground(background(active ? palette.active : BG, 8));
                             }
                             sc.removeAllViews();
                             if (label.equals("原始字节"))
                                 sc.addView(hex);
-                            else {
+                            else if (label.equals("TLS 连接")) {
+                                sc.addView(tls);
+                                if (!inspecting[0]) {
+                                    inspecting[0] = true;
+                                    inspectTls(r, d, tls);
+                                }
+                            } else {
                                 sc.addView(content);
                                 content.setText(label.equals("可读内容") ? readable
                                                                          : r.protocol() + " · IPv"
@@ -1802,6 +1843,9 @@ final class WorkspaceUi extends ContextThemeWrapper {
                             }
                             sc.scrollTo(0, 0);
                         });
+                        b.setTextColor(tabs.isEmpty() ? ACCENT : MUTED);
+                        b.setBackground(background(tabs.isEmpty() ? palette.active : BG, 8));
+                        tabs.add(b);
                         actions.addView(b, new LinearLayout.LayoutParams(0, dp(36), 1));
                     }
                 });
@@ -1861,10 +1905,208 @@ final class WorkspaceUi extends ContextThemeWrapper {
         }
         alert()
             .setTitle("组织数据")
-            .setItems(
-                new String[] {"通信连接", "协议分布", "包长度分布"}, (d, kind) -> groupDialog(kind))
+            .setItems(new String[] {"通信连接", "协议分布", "包长度分布", "TLS 连接分析"},
+                (d, kind) -> {
+                    if (kind == 3)
+                        tlsConnections();
+                    else
+                        groupDialog(kind);
+                })
             .setNegativeButton("取消", null)
             .show();
+    }
+    private void tlsConnections() {
+        File session = selectedSession;
+        LinearLayout box = col();
+        box.setPadding(dp(12), dp(4), dp(12), dp(8));
+        LinearLayout head = modalHead(box, "TLS 连接分析");
+        TextView hint = text("正在汇总 TCP 连接…", 11, MUTED);
+        box.addView(hint);
+        ListView list = new ListView(this);
+        box.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
+        Dialog d = dialog("", box);
+        tool(head, "close", "关闭", () -> d.dismiss());
+        sizeDialog(d, true);
+        io.execute(() -> {
+            try {
+                List<PacketStore.Group> all = PacketStore.groups(session, 0, () -> !d.isShowing());
+                List<PacketStore.Group> flows = new ArrayList<>();
+                List<String> names = new ArrayList<>();
+                for (PacketStore.Group g : all)
+                    if (g.key.startsWith("flow:6:")) {
+                        flows.add(g);
+                        names.add(
+                            g.label + "\n" + g.count + " 包 · " + PacketStore.formatBytes(g.bytes));
+                    }
+                post(() -> {
+                    if (!d.isShowing())
+                        return;
+                    hint.setText(flows.isEmpty() ? "没有可分析的 TCP 连接 · UDP/QUIC 暂不解析"
+                                                 : flows.size()
+                                + " 个已汇总 TCP 连接 · 点击分析最近一段连接，不凭端口判断 TLS");
+                    list.setAdapter(simpleAdapter(names));
+                    list.setOnItemClickListener((a, v, n, id) -> {
+                        hint.setText("正在定位连接…");
+                        list.setEnabled(false);
+                        io.execute(() -> {
+                            try {
+                                PacketFilter filter = new PacketFilter();
+                                filter.groupKey = flows.get(n).key;
+                                PacketStore.Query q;
+                                long cursor = -1;
+                                do {
+                                    q = PacketStore.query(
+                                        session, cursor, filter, () -> !d.isShowing());
+                                    cursor = q.next;
+                                } while (q.records.isEmpty() && cursor >= 0 && !q.cancelled);
+                                if (!q.records.isEmpty()) {
+                                    PacketStore.Record record = q.records.get(0);
+                                    post(() -> {
+                                        if (d.isShowing())
+                                            tlsDialog(record);
+                                    });
+                                } else
+                                    post(() -> {
+                                        if (d.isShowing())
+                                            hint.setText("记录已变化，请重新打开");
+                                    });
+                            } catch (Exception e) {
+                                post(() -> {
+                                    if (d.isShowing())
+                                        hint.setText("定位失败：" + e.getMessage());
+                                });
+                            } finally {
+                                post(() -> {
+                                    if (d.isShowing())
+                                        list.setEnabled(true);
+                                });
+                            }
+                        });
+                    });
+                });
+            } catch (Exception e) {
+                post(() -> {
+                    if (d.isShowing())
+                        hint.setText("读取失败：" + e.getMessage());
+                });
+            }
+        });
+    }
+    private void tlsDialog(PacketStore.Record record) {
+        LinearLayout box = col();
+        box.setPadding(dp(12), dp(4), dp(12), dp(8));
+        LinearLayout head = modalHead(box, "TLS 连接");
+        LinearLayout content = modalBody(box);
+        Dialog d = dialog("", box);
+        tool(head, "close", "关闭", () -> d.dismiss());
+        sizeDialog(d, true);
+        inspectTls(record, d, content);
+    }
+    private void tlsField(LinearLayout box, String label, String value) {
+        LinearLayout line = col();
+        line.setPadding(0, dp(4), 0, dp(5));
+        line.addView(text(label, 10, MUTED));
+        TextView t = text(value, 13, TEXT);
+        t.setTextIsSelectable(true);
+        line.addView(t);
+        box.addView(line);
+    }
+    private void inspectTls(PacketStore.Record record, Dialog owner, LinearLayout content) {
+        content.removeAllViews();
+        content.addView(text("正在重组此连接的连续字节…", 13, ACCENT));
+        io.execute(() -> {
+            try {
+                TlsInspector.Result r =
+                    TlsInspector.inspect(record, () -> !owner.isShowing() || disposed);
+                post(() -> {
+                    if (!owner.isShowing() || r.cancelled)
+                        return;
+                    content.removeAllViews();
+                    LinearLayout hero = card(content, "");
+                    LinearLayout title = row();
+                    ToolIcon icon = new ToolIcon(this, "tls", "TLS 分析", () -> {});
+                    icon.setClickable(false);
+                    title.addView(icon, new LinearLayout.LayoutParams(dp(32), dp(32)));
+                    TextView state = text(r.summary(), 17, ACCENT);
+                    state.setTypeface(null, Typeface.BOLD);
+                    title.addView(state, new LinearLayout.LayoutParams(0, -2, 1));
+                    hero.addView(title);
+                    hero.addView(text("被动观察 · 未解密正文", 11, MUTED));
+                    gap(hero, 5);
+                    hero.addView(text(r.status, 12, TEXT));
+                    LinearLayout layout = landscape() ? row() : col();
+                    layout.setGravity(Gravity.TOP);
+                    LinearLayout left = col(), right = col();
+                    if (landscape()) {
+                        layout.addView(left, new LinearLayout.LayoutParams(0, -2, 1));
+                        layout.addView(right, new LinearLayout.LayoutParams(0, -2, 1));
+                    } else {
+                        layout.addView(left);
+                        layout.addView(right);
+                    }
+                    content.addView(layout);
+                    LinearLayout handshake = card(left, "握手信息");
+                    tlsField(handshake, "服务端选择版本", r.version);
+                    tlsField(handshake, "可见服务器名称 · SNI", r.sni);
+                    tlsField(handshake, "客户端提供的应用协议 · ALPN", r.offeredAlpn);
+                    tlsField(handshake, "服务端选择的应用协议", r.selectedAlpn);
+                    tlsField(handshake, "加密套件", r.cipher);
+                    tlsField(handshake, "客户端提供的 TLS 版本", r.offeredVersions);
+                    tlsField(handshake, "ClientHello → ServerHello",
+                        r.helloMicros < 0 ? "无法判断"
+                                          : String.format(Locale.ROOT,
+                                                "%.2f ms · 可见 Hello 间隔，非完整握手耗时",
+                                                r.helloMicros / 1000.0));
+                    LinearLayout evidence = card(right, "观测范围");
+                    tlsField(evidence, "通信端点", r.route);
+                    tlsField(evidence, "本次扫描", r.coverage());
+                    int rec = 0, encrypted = 0, dup = 0;
+                    for (TlsInspector.Direction dir : r.directions) {
+                        rec += dir.records;
+                        encrypted += dir.encrypted;
+                        dup += dir.duplicate;
+                    }
+                    tlsField(evidence, "可见记录",
+                        rec + " 条 · 加密外层 " + encrypted + " 条 · 重复区间 " + dup);
+                    if (r.retries > 0)
+                        tlsField(evidence, "握手重试请求", r.retries + " 次");
+                    List<TlsInspector.Hello> hellos = new ArrayList<>();
+                    for (TlsInspector.Direction dir : r.directions) hellos.addAll(dir.hellos);
+                    hellos.sort(Comparator.comparingLong(h -> h.time));
+                    for (TlsInspector.Hello h : hellos)
+                        tlsField(evidence,
+                            h.client      ? "ClientHello"
+                                : h.retry ? "HelloRetryRequest"
+                                          : "ServerHello",
+                            new java.text.SimpleDateFormat("HH:mm:ss.SSS", Locale.ROOT)
+                                    .format(new Date(h.time / 1000))
+                                + " · 方向 " + (h.side + 1));
+                    for (TlsInspector.Direction dir : r.directions)
+                        for (String alert : dir.alertLabels)
+                            tlsField(evidence, "可见 TLS 告警", alert);
+                    LinearLayout cert = card(right, "证书");
+                    cert.addView(text(r.certificate, 12, MUTED));
+                    if (!r.warnings.isEmpty()) {
+                        LinearLayout warnings = card(content, "分析边界");
+                        for (String warning : r.warnings) {
+                            TextView t = text("• " + warning, 12, AMBER);
+                            t.setPadding(0, dp(3), 0, dp(3));
+                            warnings.addView(t);
+                        }
+                    }
+                    content.addView(
+                        text("未显示的字段表示未观察到；无法据此断定连接失败、安全或不安全。", 11,
+                            MUTED));
+                });
+            } catch (Exception e) {
+                post(() -> {
+                    if (owner.isShowing()) {
+                        content.removeAllViews();
+                        content.addView(text("分析失败：" + e.getMessage(), 13, RED));
+                    }
+                });
+            }
+        });
     }
     private void groupDialog(int kind) {
         File f = selectedSession;
@@ -1926,9 +2168,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
             toast("请先选择会话");
             return;
         }
-        if (CaptureService.active
-            && (f.equals(CaptureService.activeSession)
-                || f.getParentFile().equals(CaptureService.activeSession))) {
+        if (CaptureService.active && WorkspaceFiles.contains(CaptureService.activeSession, f)) {
             toast("请先停止并保存，再检查完整性");
             return;
         }
@@ -1987,9 +2227,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
         return new ArrayList<>(roots);
     }
     private boolean viewing(File f) {
-        return selectedSession != null
-            && selectedSession.toPath().toAbsolutePath().normalize().startsWith(
-                f.toPath().toAbsolutePath().normalize());
+        return WorkspaceFiles.contains(f, selectedSession);
     }
     private String date(long time) {
         return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT)
@@ -2001,197 +2239,778 @@ final class WorkspaceUi extends ContextThemeWrapper {
                                      seconds / 60 % 60, seconds % 60)
                                : String.format(Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60);
     }
+    private WorkspaceFiles browser() throws IOException {
+        String configured = baseDir().getCanonicalPath();
+        if (browserRoot == null || !configured.equals(browserBase)) {
+            browserRoot = baseDir().getCanonicalFile();
+            browserDir = browserRoot;
+            browserBase = configured;
+            fileClipboard.clear();
+            historySelection.clear();
+            historyManaging = false;
+        }
+        if (!browserRoot.isDirectory() && !browserRoot.mkdirs())
+            throw new IOException("保存目录不可访问，请在设置中选择目录");
+        WorkspaceFiles fs = new WorkspaceFiles(browserRoot);
+        try {
+            fs.path(browserDir, true);
+        } catch (IOException e) {
+            browserDir = browserRoot;
+        }
+        return fs;
+    }
+    private File activeFile() {
+        return CaptureService.active ? CaptureService.activeSession : null;
+    }
+    private void enterDirectory(File dir) {
+        try {
+            WorkspaceFiles fs = browser();
+            fs.path(dir, true);
+            browserDir = dir;
+            historyManaging = false;
+            historySelection.clear();
+            showTab(2);
+        } catch (Exception e) {
+            error("无法进入目录", e);
+        }
+    }
+    private void browserParents() {
+        try {
+            WorkspaceFiles fs = browser();
+            List<File> parents = new ArrayList<>();
+            for (File f = browserDir; f != null && f.toPath().startsWith(fs.root);
+                f = f.getParentFile()) {
+                parents.add(0, f);
+                if (f.toPath().equals(fs.root))
+                    break;
+            }
+            String[] names = new String[parents.size()];
+            for (int n = 0; n < names.length; n++)
+                names[n] = n == 0 ? "保存根目录" : parents.get(n).getName();
+            alert()
+                .setTitle("转到上层目录")
+                .setItems(names, (d, n) -> enterDirectory(parents.get(n)))
+                .setNegativeButton("取消", null)
+                .show();
+        } catch (Exception e) {
+            error("路径不可用", e);
+        }
+    }
     private void history() {
         int epoch = ++historyEpoch;
         LinearLayout page = col();
         body.addView(page);
         LinearLayout head = row();
-        TextView title =
-            text(historyManaging ? "已选 " + historySelection.size() + " 个" : "会话库", 18, TEXT);
+        TextView title = text(
+            historyManaging ? "已选 " + historySelection.size() + " 项" : "文件工作区", 18, TEXT);
         title.setTypeface(null, Typeface.BOLD);
         head.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         if (historyManaging) {
-            tool(head, "select", "全选 / 取消全选", () -> {
-                List<SessionLibrary.Entry> shown = new ArrayList<>();
-                for (SessionLibrary.Entry e : libraryEntries)
-                    if (historyGroup.isEmpty() || historyGroup.equals(e.group))
-                        shown.add(e);
-                if (historySelection.size() == shown.size())
-                    historySelection.clear();
-                else {
-                    historySelection.clear();
-                    for (SessionLibrary.Entry e : shown) historySelection.add(e.file);
-                }
-                showTab(2);
-            });
-            tool(head, "folder", "移动到工作分组",
-                () -> collectionDialog(new ArrayList<>(historySelection)));
-            tool(head, "trash", "删除选中的本地会话",
-                () -> confirmDelete(new ArrayList<>(historySelection), null));
-            tool(head, "close", "结束批量管理", () -> {
-                historyManaging = false;
+            tool(head, "copy", "复制选中项",
+                () -> clipboard(new ArrayList<>(historySelection), false));
+            tool(head, "cut", "剪切选中项",
+                () -> clipboard(new ArrayList<>(historySelection), true));
+            tool(head, "more", "选择与文件操作", () -> browserMenu());
+            tool(head, "close", "结束选择", () -> {
                 historySelection.clear();
+                historyManaging = false;
                 showTab(2);
             });
         } else {
-            tool(head, "import", "导入 PCAP",
-                ()
-                    -> pathDialog(
-                        Environment.getExternalStorageDirectory(), true, f -> importFile(f)));
-            tool(head, "folder", "按工作分组查看", () -> historyGroups());
-            tool(head, "sort", "排序会话",
-                ()
-                    -> alert()
-                        .setTitle("排序方式")
-                        .setSingleChoiceItems(new String[] {"时间：最新优先", "时间：最早优先",
-                                                  "名称：A–Z", "包数：最多优先", "占用：最大优先"},
-                            prefs.getInt("historySort", 0),
-                            (d, n) -> {
-                                prefs.edit().putInt("historySort", n).apply();
-                                d.dismiss();
-                                showTab(2);
-                            })
-                        .setNegativeButton("取消", null)
-                        .show());
+            tool(head, "new", "新建文件夹", () -> newDirectory());
+            ToolIcon paste = tool(head, "paste", "粘贴到此目录", () -> pasteFiles());
+            paste.setEnabled(!fileClipboard.isEmpty());
+            tool(head, "more", "目录与文件操作", () -> browserMenu());
         }
         page.addView(head);
-        TextView summary = text(historyGroup.isEmpty() ? "全部会话" : historyGroup, 11, MUTED);
-        summary.setPadding(dp(4), 0, 0, dp(5));
-        page.addView(summary);
+        LinearLayout location = row();
+        TextView path = text("", 11, MUTED);
+        path.setSingleLine();
+        path.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        path.setOnClickListener(v -> browserParents());
+        location.addView(path, new LinearLayout.LayoutParams(0, dp(28), 1));
+        ToolIcon up = tool(location, "up", "上一级", () -> {
+            if (browserDir != null && !browserDir.equals(browserRoot))
+                enterDirectory(browserDir.getParentFile());
+        });
+        page.addView(location);
+        TextView hint = text(fileClipboard.isEmpty() ? "单击打开 · 长按文件操作"
+                                                     : (clipboardMove ? "待移动 " : "待复制 ")
+                    + fileClipboard.size() + " 项 · 进入目标目录后粘贴",
+            10, ACCENT);
+        hint.setPadding(dp(3), 0, 0, dp(4));
+        page.addView(hint);
         FrameLayout area = new FrameLayout(this);
         ListView list = new ListView(this);
-        list.setDivider(new ColorDrawable(0x0010121a));
-        list.setDividerHeight(dp(6));
-        TextView empty = text("正在读取会话…", 13, MUTED);
+        list.setDivider(new ColorDrawable(0));
+        list.setDividerHeight(dp(5));
+        TextView empty = text("正在读取目录…", 13, MUTED);
         empty.setGravity(Gravity.CENTER);
         area.addView(list, new FrameLayout.LayoutParams(-1, -1));
         area.addView(empty, new FrameLayout.LayoutParams(-1, -1));
         list.setEmptyView(empty);
         page.addView(area, new LinearLayout.LayoutParams(-1, 0, 1));
-        File base = baseDir();
-        io.execute(() -> {
-            List<SessionLibrary.Entry> entries = new ArrayList<>();
-            for (File f : PacketStore.history(this, base)) {
-                try {
-                    entries.add(SessionLibrary.read(f));
-                } catch (Exception ignored) {
-                }
+        WorkspaceFiles fs;
+        File dir;
+        try {
+            fs = browser();
+            dir = browserDir;
+            path.setText(dir.getAbsolutePath());
+            up.setEnabled(!dir.equals(browserRoot));
+            java.nio.file.Path owner = fs.sessionOwner(dir.toPath());
+            if (owner != null) {
+                hint.setText("会话内部 · 仅浏览/复制");
+                tool(location, "select", "会话概览 / 分析 / 导出",
+                    () -> sessionOverview(owner.toFile()));
             }
-            SessionLibrary.sort(entries, prefs.getInt("historySort", 0));
-            post(() -> {
-                if (tab != 2 || historyEpoch != epoch)
-                    return;
-                libraryEntries = entries;
-                List<SessionLibrary.Entry> shown = new ArrayList<>();
-                long bytes = 0;
-                for (SessionLibrary.Entry e : entries)
-                    if (historyGroup.isEmpty() || historyGroup.equals(e.group)) {
-                        shown.add(e);
-                        bytes += e.bytes;
-                    }
-                summary.setText((historyGroup.isEmpty() ? "全部会话" : historyGroup) + " · "
-                    + shown.size() + " 个 · " + PacketStore.formatBytes(bytes));
-                empty.setText(shown.isEmpty() ? "这里还没有会话" : "");
-                list.setAdapter(new BaseAdapter() {
-                    public int getCount() {
-                        return shown.size();
-                    }
-                    public Object getItem(int i) {
-                        return shown.get(i);
-                    }
-                    public long getItemId(int i) {
-                        return i;
-                    }
-                    public View getView(int i, View cv, ViewGroup parent) {
-                        SessionLibrary.Entry e = shown.get(i);
-                        boolean current = viewing(e.file);
-                        LinearLayout line = row();
-                        line.setPadding(dp(12), dp(10), dp(12), dp(10));
-                        GradientDrawable outline = background(current ? 0xf226324b : SURFACE, 14);
-                        if (current)
-                            outline.setStroke(dp(1), ACCENT);
-                        line.setBackground(outline);
+        } catch (Exception e) {
+            empty.setText(e.getMessage());
+            return;
+        }
+        io.execute(() -> {
+            try {
+                List<WorkspaceFiles.Item> entries = fs.list(dir, prefs.getInt("fileSort", 0));
+                post(() -> {
+                    if (tab != 2 || historyEpoch != epoch)
+                        return;
+                    fileEntries = entries;
+                    empty.setText(entries.isEmpty() ? "此文件夹为空" : "");
+                    list.setAdapter(new BaseAdapter() {
+                        public int getCount() {
+                            return entries.size();
+                        }
+                        public Object getItem(int p) {
+                            return entries.get(p);
+                        }
+                        public long getItemId(int p) {
+                            return p;
+                        }
+                        public View getView(int n, View reuse, ViewGroup parent) {
+                            WorkspaceFiles.Item e = entries.get(n);
+                            boolean current = viewing(e.file);
+                            LinearLayout line = row();
+                            line.setPadding(dp(9), dp(7), dp(7), dp(7));
+                            GradientDrawable bg =
+                                background(current ? palette.active : SURFACE, 12);
+                            if (current)
+                                bg.setStroke(dp(1), ACCENT);
+                            line.setBackground(bg);
+                            if (historyManaging) {
+                                CheckBox check = new CheckBox(WorkspaceUi.this);
+                                check.setChecked(historySelection.contains(e.file));
+                                check.setButtonTintList(
+                                    android.content.res.ColorStateList.valueOf(ACCENT));
+                                check.setFocusable(false);
+                                check.setOnClickListener(v -> {
+                                    toggleFile(e.file);
+                                    title.setText("已选 " + historySelection.size() + " 项");
+                                });
+                                line.addView(check, new LinearLayout.LayoutParams(dp(34), dp(40)));
+                            } else {
+                                if (e.directory) {
+                                    ToolIcon icon = new ToolIcon(
+                                        WorkspaceUi.this, "folder", "打开文件夹", () -> {});
+                                    icon.setClickable(false);
+                                    icon.setFocusable(false);
+                                    icon.setTooltipText(null);
+                                    icon.setLongClickable(false);
+                                    line.addView(
+                                        icon, new LinearLayout.LayoutParams(dp(30), dp(36)));
+                                } else
+                                    line.addView(fileIcon(e.file.getName()),
+                                        new LinearLayout.LayoutParams(dp(30), dp(36)));
+                            }
+                            LinearLayout labels = col();
+                            LinearLayout first = row();
+                            TextView name = text(e.file.getName(), 14, TEXT);
+                            name.setTypeface(null, Typeface.BOLD);
+                            name.setSingleLine();
+                            name.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+                            first.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+                            if (current) {
+                                TextView tag = text("正在查看", 9, ACCENT);
+                                tag.setPadding(dp(5), 0, dp(5), 0);
+                                first.addView(tag);
+                            }
+                            labels.addView(first);
+                            TextView meta =
+                                text(e.description + " · " + date(e.modified), 10, MUTED);
+                            meta.setSingleLine();
+                            meta.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                            labels.addView(meta);
+                            line.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+
+                            return line;
+                        }
+                    });
+                    list.setOnItemClickListener((a, v, n, id) -> {
+                        WorkspaceFiles.Item e = entries.get(n);
                         if (historyManaging) {
-                            CheckBox check = new CheckBox(WorkspaceUi.this);
-                            check.setButtonTintList(
-                                android.content.res.ColorStateList.valueOf(ACCENT));
-                            check.setChecked(historySelection.contains(e.file));
-                            check.setFocusable(false);
-                            check.setOnClickListener(v -> {
-                                if (historySelection.contains(e.file))
-                                    historySelection.remove(e.file);
-                                else
-                                    historySelection.add(e.file);
-                                title.setText("已选 " + historySelection.size() + " 个");
-                            });
-                            line.addView(check, new LinearLayout.LayoutParams(dp(36), dp(44)));
-                        }
-                        LinearLayout labels = col();
-                        LinearLayout first = row();
-                        TextView name = text(e.title, 15, TEXT);
-                        name.setTypeface(null, Typeface.BOLD);
-                        name.setSingleLine();
-                        name.setEllipsize(android.text.TextUtils.TruncateAt.END);
-                        first.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
-                        if (current) {
-                            TextView badge = text("正在查看", 10, ACCENT);
-                            badge.setPadding(dp(7), dp(2), dp(7), dp(2));
-                            badge.setBackground(background(0xff354361, 8));
-                            first.addView(badge);
-                        }
-                        labels.addView(first);
-                        labels.addView(text(date(e.started) + " · " + e.packets + " 包 · "
-                                + PacketStore.formatBytes(e.bytes)
-                                + (e.duration > 0 ? " · " + elapsed(e.duration) : ""),
-                            11, MUTED));
-                        TextView detail = text((e.group.isEmpty() ? "未分组" : e.group) + " · "
-                                + (e.description.isEmpty() ? e.target : e.description)
-                                + (e.unknown > 0 ? " · 未知 " + e.unknown + " 包" : ""),
-                            11, current ? ACCENT : MUTED);
-                        detail.setSingleLine();
-                        detail.setEllipsize(android.text.TextUtils.TruncateAt.END);
-                        labels.addView(detail);
-                        line.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
-                        return line;
-                    }
-                });
-                list.setOnItemClickListener((a, v, i, id) -> {
-                    SessionLibrary.Entry e = shown.get(i);
-                    if (historyManaging) {
-                        if (historySelection.contains(e.file))
-                            historySelection.remove(e.file);
+                            toggleFile(e.file);
+                            ((BaseAdapter) list.getAdapter()).notifyDataSetChanged();
+                            title.setText("已选 " + historySelection.size() + " 项");
+                        } else if (e.link)
+                            toast("符号链接不进入，也不操作");
+                        else if (e.directory)
+                            enterDirectory(e.file);
                         else
-                            historySelection.add(e.file);
-                        showTab(2);
-                    } else
-                        sessionOverview(e.file);
+                            openFile(e);
+                    });
+                    list.setOnItemLongClickListener((a, v, n, id) -> {
+                        if (entries.get(n).link)
+                            return true;
+                        if (historyManaging) {
+                            toggleFile(entries.get(n).file);
+                            showTab(2);
+                        } else
+                            fileMenu(entries.get(n));
+                        return true;
+                    });
                 });
-                list.setOnItemLongClickListener((a, v, i, id) -> {
-                    historyManaging = true;
-                    historySelection.add(shown.get(i).file);
-                    showTab(2);
-                    return true;
+            } catch (Exception e) {
+                post(() -> {
+                    if (tab == 2 && historyEpoch == epoch)
+                        empty.setText("读取失败：" + e.getMessage());
                 });
-            });
+            }
         });
     }
-    private void historyGroups() {
-        Set<String> groups = new TreeSet<>();
-        for (SessionLibrary.Entry e : libraryEntries)
-            if (!e.group.isEmpty())
-                groups.add(e.group);
-        List<String> values = new ArrayList<>();
-        values.add("全部会话");
-        values.addAll(groups);
+    private void toggleFile(File file) {
+        if (!historySelection.remove(file))
+            historySelection.add(file);
+    }
+    private void browserMenu() {
+        List<String> names = new ArrayList<>();
+        List<Runnable> run = new ArrayList<>();
+        names.add("新建文件夹");
+        run.add(() -> newDirectory());
+        if (historyManaging) {
+            names.add("全选 / 取消全选");
+            run.add(() -> {
+                int eligible = 0;
+                for (WorkspaceFiles.Item e : fileEntries)
+                    if (!e.link)
+                        eligible++;
+                if (historySelection.size() == eligible)
+                    historySelection.clear();
+                else {
+                    historySelection.clear();
+                    for (WorkspaceFiles.Item e : fileEntries)
+                        if (!e.link)
+                            historySelection.add(e.file);
+                }
+                showTab(2);
+            });
+            if (historySelection.size() == 1) {
+                File f = historySelection.iterator().next();
+                names.add("重命名");
+                run.add(() -> renameFile(f));
+            }
+            names.add("删除选中项");
+            run.add(() -> confirmDelete(new ArrayList<>(historySelection), null));
+        } else {
+            names.add("导入 PCAP");
+            run.add(()
+                        -> pathDialog(
+                            Environment.getExternalStorageDirectory(), true, f -> importFile(f)));
+            names.add("排序");
+            run.add(()
+                        -> alert()
+                            .setTitle("目录排序 · 文件夹优先")
+                            .setSingleChoiceItems(
+                                new String[] {"修改时间：最新优先", "修改时间：最早优先",
+                                    "名称：A–Z", "文件大小：最大优先"},
+                                prefs.getInt("fileSort", 0),
+                                (d, n) -> {
+                                    prefs.edit().putInt("fileSort", n).apply();
+                                    d.dismiss();
+                                    showTab(2);
+                                })
+                            .setNegativeButton("取消", null)
+                            .show());
+            names.add("选择已登记的保存目录");
+            run.add(() -> browserRoots());
+            names.add("批量选择");
+            run.add(() -> {
+                historyManaging = true;
+                showTab(2);
+            });
+            names.add("刷新目录");
+            run.add(() -> showTab(2));
+        }
+        if (!fileClipboard.isEmpty()) {
+            names.add("粘贴 " + fileClipboard.size() + " 项");
+            run.add(() -> pasteFiles());
+            names.add("清空剪贴板");
+            run.add(() -> {
+                fileClipboard.clear();
+                showTab(2);
+            });
+        }
         alert()
-            .setTitle("工作分组")
-            .setItems(values.toArray(new String[0]),
+            .setTitle("文件操作")
+            .setItems(names.toArray(new String[0]), (d, n) -> run.get(n).run())
+            .setNegativeButton("取消", null)
+            .show();
+    }
+    private void browserRoots() {
+        List<File> roots = new ArrayList<>();
+        for (File f : libraryRoots())
+            if (f.isDirectory())
+                try {
+                    File real = f.getCanonicalFile();
+                    if (!roots.contains(real))
+                        roots.add(real);
+                } catch (IOException ignored) {
+                }
+        String[] labels = new String[roots.size()];
+        for (int n = 0; n < labels.length; n++) labels[n] = roots.get(n).getAbsolutePath();
+        alert()
+            .setTitle("保存目录")
+            .setItems(labels,
                 (d, n) -> {
-                    historyGroup = n == 0 ? "" : values.get(n);
+                    browserRoot = roots.get(n);
+                    browserDir = browserRoot;
+                    fileClipboard.clear();
+                    historySelection.clear();
+                    historyManaging = false;
                     showTab(2);
                 })
             .setNegativeButton("取消", null)
             .show();
+    }
+    private void fileMenu(WorkspaceFiles.Item e) {
+        List<String> names = new ArrayList<>();
+        List<Runnable> run = new ArrayList<>();
+        if (e.link) {
+            toast("不操作符号链接");
+            return;
+        }
+        names.add("打开");
+        run.add(() -> {
+            if (e.directory)
+                enterDirectory(e.file);
+            else
+                openFile(e);
+        });
+        if (e.session) {
+            names.add("会话概览 / 分析 / 导出");
+            run.add(() -> sessionOverview(e.file));
+        } else if (!e.directory && e.file.getName().toLowerCase(Locale.ROOT).endsWith(".pcap")) {
+            names.add("导入分析（生成独立会话）");
+            run.add(() -> importFile(e.file));
+        }
+        boolean edit = true, copy = true;
+        try {
+            browser().guard(e.file, activeFile(), false);
+        } catch (Exception ex) {
+            edit = false;
+        }
+        try {
+            browser().sources(Collections.singletonList(e.file), activeFile(), true);
+        } catch (Exception ex) {
+            copy = false;
+        }
+        if (copy) {
+            names.add("复制");
+            run.add(() -> clipboard(Collections.singletonList(e.file), false));
+        }
+        if (edit) {
+            names.add("剪切");
+            run.add(() -> clipboard(Collections.singletonList(e.file), true));
+            names.add("移动到文件夹");
+            run.add(() -> collectionDialog(Collections.singletonList(e.file)));
+            names.add("重命名");
+            run.add(() -> renameFile(e.file));
+            names.add("删除");
+            run.add(() -> confirmDelete(Collections.singletonList(e.file), null));
+        }
+        names.add("多选");
+        run.add(() -> {
+            historyManaging = true;
+            historySelection.add(e.file);
+            showTab(2);
+        });
+        names.add("属性");
+        run.add(() -> fileProperties(e));
+        alert()
+            .setTitle(e.file.getName())
+            .setItems(names.toArray(new String[0]), (d, n) -> run.get(n).run())
+            .setNegativeButton("取消", null)
+            .show();
+    }
+    private ImageView fileIcon(String name) {
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(name.toLowerCase(Locale.ROOT).endsWith(".zip")
+                ? R.drawable.ic_archive
+                : R.drawable.ic_document);
+        icon.setImageTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+        icon.setPadding(dp(2), 0, dp(2), 0);
+        icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        icon.setContentDescription("文件");
+        return icon;
+    }
+    private void openFile(WorkspaceFiles.Item entry) {
+        String name = entry.file.getName().toLowerCase(Locale.ROOT);
+        if (name.endsWith(".zip")) {
+            archiveDialog(entry.file);
+            return;
+        }
+        if (name.endsWith(".pcap")) {
+            File parent = entry.file.getParentFile();
+            if (name.matches("capture_\\d+\\.pcap") && new File(parent, "packets.idx").isFile()
+                && new File(parent, "session.json").isFile()) {
+                selectedSession = parent;
+                historyManaging = false;
+                historySelection.clear();
+                showTab(1);
+                toast("已打开所属抓包会话");
+            } else
+                importFile(entry.file);
+            return;
+        }
+        previewFile(entry.file.getName(), entry.file.length(), () -> {
+            try (InputStream in = new FileInputStream(entry.file)) {
+                return readPreview(in);
+            }
+        });
+    }
+    private byte[] readPreview(InputStream in) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] b = new byte[8192];
+        while (out.size() < 65536) {
+            int n = in.read(b, 0, Math.min(b.length, 65536 - out.size()));
+            if (n < 0)
+                break;
+            out.write(b, 0, n);
+        }
+        return out.toByteArray();
+    }
+    private interface PreviewBytes {
+        byte[] read() throws Exception;
+    }
+    private void previewFile(String title, long size, PreviewBytes loader) {
+        LinearLayout box = col();
+        box.setPadding(dp(12), dp(4), dp(12), dp(8));
+        LinearLayout head = modalHead(box, title);
+        TextView hint = text("只读预览 · " + (size < 0 ? "大小未知" : PacketStore.formatBytes(size))
+                + " · 最多64KiB",
+            10, MUTED);
+        box.addView(hint);
+        LinearLayout content = modalBody(box);
+        TextView loading = text("读取中…", 13, MUTED);
+        content.addView(loading);
+        Dialog d = dialog("", box);
+        tool(head, "close", "关闭", () -> d.dismiss());
+        sizeDialog(d, true);
+        io.execute(() -> {
+            try {
+                byte[] raw = loader.read();
+                boolean readable = PacketFilter.isReadable(raw) || raw.length == 0;
+                post(() -> {
+                    if (!d.isShowing())
+                        return;
+                    content.removeAllViews();
+                    if (readable) {
+                        TextView text = text(new String(raw, StandardCharsets.UTF_8), 12, TEXT);
+                        text.setTypeface(Typeface.MONOSPACE);
+                        text.setTextIsSelectable(true);
+                        content.addView(text);
+                    } else {
+                        HexDumpView hex = new HexDumpView(this);
+                        hex.setBytes(raw);
+                        content.addView(hex);
+                        hint.setText(hint.getText() + " · 原始字节");
+                    }
+                });
+            } catch (Exception e) {
+                post(() -> {
+                    if (d.isShowing())
+                        loading.setText("无法读取：" + e.getMessage());
+                });
+            }
+        });
+    }
+    private void archiveDialog(File file) {
+        LinearLayout box = col();
+        box.setPadding(dp(12), dp(4), dp(12), dp(8));
+        LinearLayout head = modalHead(box, file.getName());
+        LinearLayout nav = row();
+        TextView path = text("/", 11, MUTED);
+        path.setSingleLine();
+        path.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        nav.addView(path, new LinearLayout.LayoutParams(0, -2, 1));
+        box.addView(nav);
+        ListView list = new ListView(this);
+        box.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
+        TextView status = text("只读浏览 · 不解压，不改原文件", 10, MUTED);
+        box.addView(status);
+        Dialog d = dialog("", box);
+        tool(head, "close", "关闭压缩包", () -> d.dismiss());
+        String[] current = {""};
+        ArchiveIndex[] archive = {null};
+        int[] epoch = {0};
+        Runnable[] load = {null};
+        tool(nav, "up", "上一级", () -> {
+            String prefix = current[0];
+            if (prefix.isEmpty())
+                return;
+            String trim = prefix.substring(0, prefix.length() - 1);
+            int slash = trim.lastIndexOf('/');
+            current[0] = slash < 0 ? "" : trim.substring(0, slash + 1);
+            load[0].run();
+        });
+        load[0] = () -> {
+            int token = ++epoch[0];
+            String prefix = current[0];
+            path.setText("/" + prefix);
+            status.setText("读取目录…");
+            io.execute(() -> {
+                try {
+                    if (archive[0] == null)
+                        archive[0] = new ArchiveIndex(file);
+                    List<ArchiveIndex.Entry> entries = archive[0].list(prefix);
+                    post(() -> {
+                        if (!d.isShowing() || epoch[0] != token)
+                            return;
+                        status.setText(entries.size() + " 项 · 只读浏览，不解压");
+                        list.setAdapter(new BaseAdapter() {
+                            public int getCount() {
+                                return entries.size();
+                            }
+                            public Object getItem(int n) {
+                                return entries.get(n);
+                            }
+                            public long getItemId(int n) {
+                                return n;
+                            }
+                            public View getView(int n, View reuse, ViewGroup parent) {
+                                ArchiveIndex.Entry e = entries.get(n);
+                                LinearLayout line = row();
+                                line.setPadding(dp(6), dp(6), dp(6), dp(6));
+                                if (e.directory) {
+                                    ToolIcon icon = new ToolIcon(
+                                        WorkspaceUi.this, "folder", "文件夹", () -> {});
+                                    icon.setClickable(false);
+                                    icon.setFocusable(false);
+                                    icon.setTooltipText(null);
+                                    icon.setLongClickable(false);
+                                    line.addView(
+                                        icon, new LinearLayout.LayoutParams(dp(30), dp(36)));
+                                } else
+                                    line.addView(fileIcon(e.name),
+                                        new LinearLayout.LayoutParams(dp(30), dp(36)));
+                                TextView title = text(e.name
+                                        + (e.directory ? ""
+                                                       : "\n"
+                                                    + (e.size < 0
+                                                            ? "大小未知"
+                                                            : PacketStore.formatBytes(e.size))),
+                                    13, TEXT);
+                                line.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+                                return line;
+                            }
+                        });
+                        list.setOnItemClickListener((a, v, n, id) -> {
+                            ArchiveIndex.Entry e = entries.get(n);
+                            if (e.directory) {
+                                current[0] = e.path;
+                                load[0].run();
+                            } else
+                                previewFile(e.name, e.size, () -> archive[0].preview(e.path));
+                        });
+                    });
+                } catch (Exception e) {
+                    post(() -> {
+                        if (d.isShowing() && epoch[0] == token) {
+                            list.setAdapter(null);
+                            status.setText("无法打开：" + e.getMessage());
+                        }
+                    });
+                }
+            });
+        };
+        dialogBackActions.put(d, () -> {
+            String prefix = current[0];
+            if (prefix.isEmpty()) {
+                d.dismiss();
+                return;
+            }
+            String trim = prefix.substring(0, prefix.length() - 1);
+            int slash = trim.lastIndexOf('/');
+            current[0] = slash < 0 ? "" : trim.substring(0, slash + 1);
+            load[0].run();
+        });
+        sizeDialog(d, true);
+        load[0].run();
+    }
+    private void fileProperties(WorkspaceFiles.Item e) {
+        LinearLayout box = col();
+        box.setPadding(dp(12), dp(4), dp(12), dp(8));
+        LinearLayout head = modalHead(box, "文件信息");
+        LinearLayout content = modalBody(box);
+        information(content, "名称", e.file.getName());
+        information(content, "路径", e.file.getAbsolutePath());
+        information(content, "修改时间", date(e.modified));
+        information(content, "类型",
+            e.session         ? "抓包会话目录"
+                : e.directory ? "文件夹"
+                              : "文件 · " + PacketStore.formatBytes(e.size));
+        Dialog d = dialog("", box);
+        tool(head, "close", "关闭", () -> d.dismiss());
+        sizeEditor(d, 420);
+    }
+    private void newDirectory() {
+        try {
+            WorkspaceFiles fs = browser();
+            File parent = browserDir;
+            editTextDialog("新建文件夹", "", name -> {
+                fs.mkdir(parent, name, activeFile());
+                showTab(2);
+            });
+        } catch (Exception e) {
+            error("无法新建文件夹", e);
+        }
+    }
+    private void renameFile(File file) {
+        try {
+            WorkspaceFiles fs = browser();
+            fs.guard(file, activeFile(), false);
+            editTextDialog("重命名实际文件 / 文件夹", file.getName(), name -> {
+                File renamed = fs.rename(file, name, activeFile());
+                WorkspaceFiles.Result r = new WorkspaceFiles.Result();
+                r.moved.put(file, renamed);
+                fileClipboard.clear();
+                applyFileResult(r);
+            });
+        } catch (Exception e) {
+            error("无法重命名", e);
+        }
+    }
+    private void clipboard(List<File> files, boolean move) {
+        try {
+            WorkspaceFiles fs = browser();
+            fs.sources(files, activeFile(), !move);
+            fileClipboard.clear();
+            fileClipboard.addAll(files);
+            clipboardMove = move;
+            historySelection.clear();
+            historyManaging = false;
+            showTab(2);
+            toast("已" + (move ? "剪切" : "复制") + files.size() + " 项，进入目标文件夹后点粘贴");
+        } catch (Exception e) {
+            error("无法选择这些文件", e);
+        }
+    }
+    private void pasteFiles() {
+        if (fileClipboard.isEmpty()) {
+            toast("剪贴板为空");
+            return;
+        }
+        try {
+            WorkspaceFiles fs = browser();
+            List<File> files = new ArrayList<>(fileClipboard);
+            File destination = browserDir;
+            boolean moving = clipboardMove;
+            runFileOperation(moving ? "移动文件" : "复制文件",
+                (cancel, progress)
+                    -> fs.transfer(files, destination, moving, activeFile(), cancel, progress),
+                result -> {
+                    if (moving) {
+                        for (File f : result.moved.keySet()) fileClipboard.remove(f);
+                    }
+                    applyFileResult(result);
+                });
+        } catch (Exception e) {
+            error("无法粘贴", e);
+        }
+    }
+    private interface FileJob {
+        WorkspaceFiles.Result run(WorkspaceFiles.Cancel cancel, WorkspaceFiles.Progress progress)
+            throws Exception;
+    }
+    private void runFileOperation(
+        String title, FileJob job, java.util.function.Consumer<WorkspaceFiles.Result> done) {
+        ProgressDialog wait = track(new ProgressDialog(this));
+        wait.setTitle(title);
+        wait.setMessage("准备文件操作…");
+        wait.setIndeterminate(true);
+        wait.setCancelable(false);
+        fixedDialogs.add(wait);
+        java.util.concurrent.atomic.AtomicBoolean cancel =
+            new java.util.concurrent.atomic.AtomicBoolean();
+        wait.setButton(DialogInterface.BUTTON_NEGATIVE, "取消", (d, n) -> {});
+        wait.show();
+        wait.getButton(DialogInterface.BUTTON_NEGATIVE).setOnClickListener(v -> {
+            cancel.set(true);
+            wait.setMessage("正在取消；已完成的操作会保留…");
+        });
+        io.execute(() -> {
+            try {
+                long[] last = {0};
+                WorkspaceFiles.Result result = job.run(cancel::get, value -> {
+                    long now = System.currentTimeMillis();
+                    if (now - last[0] > 120) {
+                        last[0] = now;
+                        post(() -> {
+                            if (wait.isShowing() && !cancel.get())
+                                wait.setMessage(value);
+                        });
+                    }
+                });
+                post(() -> {
+                    wait.dismiss();
+                    done.accept(result);
+                });
+            } catch (Exception e) {
+                post(() -> {
+                    wait.dismiss();
+                    if (tab == 2)
+                        showTab(2);
+                    error("文件操作未全部完成", e);
+                });
+            }
+        });
+    }
+    private void forgetFile(File file) {
+        if (viewing(file))
+            selectedSession = null;
+        if (!CaptureService.active && WorkspaceFiles.contains(file, CaptureService.activeSession))
+            synchronized (CaptureService.LOCK) {
+                CaptureService.activeSession = null;
+                CaptureService.live = new JSONObject();
+            }
+    }
+    private void applyFileResult(WorkspaceFiles.Result result) {
+        for (Map.Entry<File, File> change : result.moved.entrySet()) {
+            selectedSession =
+                WorkspaceFiles.remap(selectedSession, change.getKey(), change.getValue());
+            if (!CaptureService.active)
+                CaptureService.activeSession = WorkspaceFiles.remap(
+                    CaptureService.activeSession, change.getKey(), change.getValue());
+            browserDir = WorkspaceFiles.remap(browserDir, change.getKey(), change.getValue());
+            for (int i = 0; i < fileClipboard.size(); i++)
+                fileClipboard.set(i,
+                    WorkspaceFiles.remap(fileClipboard.get(i), change.getKey(), change.getValue()));
+        }
+        for (File file : result.deleted) forgetFile(file);
+        dataSession = null;
+        generation++;
+        relatedEpoch++;
+        queryBusy = false;
+        records.clear();
+        loadedIds.clear();
+        bookmarks.clear();
+        selected.clear();
+        knownCount = -1;
+        historySelection.clear();
+        historyManaging = false;
+        if (tab == 2)
+            showTab(2);
+        if (!result.failures.isEmpty())
+            error("部分项目未完成", new IOException(String.join("\n", result.failures)));
+        else
+            toast("文件操作完成");
     }
     private void metric(LinearLayout row, String value, String label) {
         LinearLayout tile = col();
@@ -2226,11 +3045,15 @@ final class WorkspaceUi extends ContextThemeWrapper {
         TextView loading = text("读取中…", 13, MUTED);
         content.addView(loading);
         Dialog d = dialog("", box);
+        tool(head, "folder", "浏览会话文件", () -> {
+            d.dismiss();
+            enterDirectory(file);
+        });
         tool(head, "close", "关闭概览", () -> d.dismiss());
         LinearLayout manage = row();
         action(manage, "名称与备注", false, () -> editSession(file, d));
-        action(
-            manage, "工作分组", false, () -> collectionDialog(Collections.singletonList(file), d));
+        action(manage, "移动到文件夹", false,
+            () -> collectionDialog(Collections.singletonList(file), d));
         action(manage, "删除", false, () -> confirmDelete(Collections.singletonList(file), d));
         ((Button) manage.getChildAt(2)).setTextColor(RED);
         box.addView(manage);
@@ -2282,7 +3105,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
                         quality.addView(text(m.optString("error"), 12, RED));
                     information(content, "抓取目标",
                         e.target + (m.optInt("uid", -1) >= 0 ? " · UID " + m.optInt("uid") : ""));
-                    information(content, "工作分组", e.group.isEmpty() ? "未分组" : e.group);
+                    information(content, "所在文件夹", file.getParentFile().getName());
                     if (m.has("finished"))
                         information(content, "结束时间", date(m.optLong("finished")));
                     if (!e.description.isEmpty())
@@ -2338,99 +3161,57 @@ final class WorkspaceUi extends ContextThemeWrapper {
         collectionDialog(files, null);
     }
     private void collectionDialog(List<File> files, Dialog overview) {
-        if (files.isEmpty()) {
-            toast("请先选择会话");
-            return;
-        }
-        editTextDialog("工作分组（留空取消分组）", "", name -> {
-            if (name.length() > 48)
-                throw new IOException("分组名称最多48字");
-            List<File> roots = libraryRoots();
-            io.execute(() -> {
-                List<String> failures = new ArrayList<>();
-                for (File file : files) try {
-                        SessionLibrary.annotate(file, roots,
-                            CaptureService.active ? CaptureService.activeSession : null, null, null,
-                            name);
-                    } catch (Exception e) {
-                        failures.add(file.getName() + "：" + e.getMessage());
-                    }
-                post(() -> {
-                    if (overview != null)
-                        overview.dismiss();
-                    historySelection.clear();
-                    historyManaging = false;
-                    if (tab == 2)
-                        showTab(2);
-                    if (failures.isEmpty())
-                        toast("分组已更新");
-                    else
-                        error("部分会话未更改", new IOException(String.join("\n", failures)));
-                });
+        try {
+            WorkspaceFiles fs = browser();
+            fs.sources(files, activeFile());
+            folderDialog(browserRoot, destination -> {
+                // A picker can browse externally; the filesystem workspace enforces this root.
+                if (overview != null)
+                    overview.dismiss();
+                runFileOperation("移动到文件夹",
+                    (cancel, progress)
+                        -> fs.transfer(files, destination, true, activeFile(), cancel, progress),
+                    result -> applyFileResult(result));
             });
-        });
+        } catch (Exception e) {
+            error("无法移动", e);
+        }
     }
     private void confirmDelete(List<File> files, Dialog overview) {
         if (files.isEmpty()) {
-            toast("请先选择会话");
+            toast("请先选择文件或文件夹");
             return;
         }
         alert()
-            .setTitle("删除 " + files.size() + " 个本地会话？")
-            .setMessage("将同时删除手机中的原包、未知包、收藏、报告及会话目录，无法撤销。正在抓取的"
-                + "会话不会删除。")
+            .setTitle("删除 " + files.size() + " 个本地项目？")
+            .setMessage("会实际删除手机中的文件。文件夹包含的子文件夹、原包、索引、收藏和报告也将删"
+                + "除，无法撤销。正在采集的会话及其父目录受保护。")
             .setNegativeButton("保留", null)
             .setPositiveButton("彻底删除",
-                (dialog, which) -> {
-                    List<File> roots = libraryRoots();
-                    io.execute(() -> {
-                        List<File> deleted = new ArrayList<>();
-                        List<String> failures = new ArrayList<>();
-                        for (File file : files) try {
-                                SessionLibrary.delete(file, roots,
-                                    CaptureService.active ? CaptureService.activeSession : null);
-                                deleted.add(file);
-                            } catch (Exception e) {
-                                failures.add(file.getName() + "：" + e.getMessage());
-                            }
-                        post(() -> {
-                            for (File f : deleted) {
-                                if (viewing(f)) {
-                                    selectedSession = null;
-                                    dataSession = null;
-                                    records.clear();
-                                    bookmarks.clear();
-                                    selected.clear();
-                                    relatedKey = "";
-                                    ++relatedEpoch;
-                                }
-                                if (!CaptureService.active && CaptureService.activeSession != null
-                                    && CaptureService.activeSession.toPath().startsWith(f.toPath()))
-                                    synchronized (CaptureService.LOCK) {
-                                        CaptureService.activeSession = null;
-                                        CaptureService.live = new JSONObject();
-                                    }
-                            }
-                            if (overview != null && !deleted.isEmpty())
-                                overview.dismiss();
-                            historySelection.clear();
-                            historyManaging = false;
-                            if (tab == 2)
-                                showTab(2);
-                            if (failures.isEmpty())
-                                toast("已删除 " + deleted.size() + " 个会话及本地文件");
-                            else
-                                error("部分文件未删除，剩余目录保留",
-                                    new IOException(String.join("\n", failures)));
-                        });
-                    });
+                (d, n) -> {
+                    try {
+                        WorkspaceFiles fs = browser();
+                        fs.sources(files, activeFile());
+                        if (overview != null)
+                            overview.dismiss();
+                        fileClipboard.clear();
+                        runFileOperation("删除文件",
+                            (cancel, progress)
+                                -> fs.delete(files, activeFile(), cancel, progress),
+                            result -> {
+                                if (!result.failures.isEmpty())
+                                    for (File file : files) forgetFile(file);
+                                applyFileResult(result);
+                            });
+                    } catch (Exception e) {
+                        error("无法删除", e);
+                    }
                 })
             .show();
     }
     private void exportDialog(File session) {
         if (CaptureService.active
-            && (session.equals(CaptureService.activeSession)
-                || session.getParentFile().equals(CaptureService.activeSession))) {
+            && WorkspaceFiles.contains(CaptureService.activeSession, session)) {
             toast("请先停止并保存，再导出完整会话");
             return;
         }
@@ -2521,11 +3302,19 @@ final class WorkspaceUi extends ContextThemeWrapper {
         d.show();
     }
     private void importFile(File file) {
+        if (activeFile() != null && WorkspaceFiles.contains(activeFile(), file)) {
+            toast("请先停止采集，再导入正在写入的文件");
+            return;
+        }
         ProgressDialog wait = progress("导入中", "正在检查 PCAP 并建立索引…", false);
         io.execute(() -> {
             File dir = null;
             try (InputStream in = new FileInputStream(file)) {
-                File base = new File(getExternalFilesDir(null), "captures");
+                File base = browserDir != null && tab == 2 ? browserDir : baseDir();
+                WorkspaceFiles fs = browser();
+                if (fs.sessionOwner(base.toPath()) != null)
+                    base = browserRoot;
+                fs.guard(base, activeFile(), true);
                 base.mkdirs();
                 dir = new File(base,
                     "导入_" + System.currentTimeMillis() + "_"
@@ -2566,7 +3355,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
         LinearLayout head = row();
         TextView index = text(number, 11, ACCENT);
         index.setGravity(Gravity.CENTER);
-        index.setBackground(background(0xff303d58, 7));
+        index.setBackground(background(palette.active, 7));
         head.addView(index, new LinearLayout.LayoutParams(dp(28), dp(26)));
         TextView label = text(title, 16, TEXT);
         label.setPadding(dp(9), 0, 0, 0);
@@ -2610,7 +3399,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
         toggle.setChecked(prefs.getBoolean(key, initial));
         toggle.setThumbTintList(new android.content.res.ColorStateList(
             new int[][] {new int[] {android.R.attr.state_checked}, new int[] {}},
-            new int[] {ACCENT, 0xff677084}));
+            new int[] {ACCENT, palette.disabled}));
         toggle.setOnCheckedChangeListener((v, checked) -> {
             prefs.edit().putBoolean(key, checked).apply();
             toast("已更新，下次抓包生效");
@@ -2628,9 +3417,9 @@ final class WorkspaceUi extends ContextThemeWrapper {
         TextView title = text("偏好设置", 23, TEXT);
         title.setTypeface(null, Typeface.BOLD);
         heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView version = text("NetCap · 0.3.1", 11, ACCENT);
+        TextView version = text("NetCap · 0.4.3", 11, ACCENT);
         version.setPadding(dp(9), dp(5), dp(9), dp(5));
-        version.setBackground(background(0xff29364e, 9));
+        version.setBackground(background(palette.active, 9));
         heading.addView(version);
         page.addView(heading);
         gap(page, 12);
@@ -2716,6 +3505,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
         preferenceToggle(capture, "独立保留未知归属包", "keepUnknown", false, "save");
         preferenceToggle(capture, "熄屏保持抓包", "wake", true, "select");
         LinearLayout appearance = preferencesCard(right, "03", "外观与交互");
+        preference(appearance, "全局配色", palette.name, "palette", () -> themeDialog());
         preference(appearance, "背景不透明度", prefs.getInt("opacity", 86) + "%", "select",
             () -> opacityDialog());
         preference(appearance, "收藏与关联", "前往数据页", "save", () -> showTab(1));
@@ -2734,6 +3524,135 @@ final class WorkspaceUi extends ContextThemeWrapper {
             else
                 service.exitTool();
         });
+    }
+    private void themeDialog() {
+        LinearLayout box = col();
+        box.setPadding(dp(10), dp(4), dp(10), dp(8));
+        LinearLayout head = modalHead(box, "主题画廊");
+        LinearLayout content = modalBody(box);
+        content.addView(text(ThemePalette.ALL.length + " 套配色 · 先预览，再应用", 11, MUTED));
+        LinearLayout gallery = col();
+        content.addView(gallery);
+        ThemeGrid grid = new ThemeGrid(this);
+        gallery.addView(grid, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout preview = col();
+        gallery.addView(preview, new LinearLayout.LayoutParams(-1, -2));
+        ThemePalette[] choice = {palette};
+        List<LinearLayout> cards = new ArrayList<>();
+        List<TextView> checks = new ArrayList<>();
+        Runnable render = () -> {
+            for (int i = 0; i < cards.size(); i++) {
+                ThemePalette t = ThemePalette.ALL[i];
+                boolean on = t == choice[0];
+                GradientDrawable bg = new GradientDrawable();
+                bg.setColor(t.workspace);
+                bg.setCornerRadius(dp(12));
+                bg.setStroke(dp(on ? 2 : 1), on ? t.accent : t.edge);
+                cards.get(i).setBackground(bg);
+                cards.get(i).setSelected(on);
+                checks.get(i).setText(on ? "✓" : "");
+                cards.get(i).setContentDescription(
+                    t.name + "，" + t.mood + (on ? "，已选预览" : ""));
+            }
+            ThemePalette t = choice[0];
+            preview.removeAllViews();
+            preview.setPadding(dp(12), dp(12), dp(12), dp(12));
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(t.workspace);
+            bg.setCornerRadius(dp(12));
+            bg.setStroke(dp(1), t.edge);
+            preview.setBackground(bg);
+            TextView heading = text(t.name, 17, t.text);
+            heading.setTypeface(null, Typeface.BOLD);
+            preview.addView(heading);
+            preview.addView(text(t.mood, 11, t.muted));
+            gap(preview, 10);
+            TextView example = text("↑ TCP     128 B\n192.0.2.1 → 198.51.100.2", 11, t.accent);
+            example.setPadding(dp(10), dp(10), dp(10), dp(10));
+            GradientDrawable panel = new GradientDrawable();
+            panel.setColor(t.surface);
+            panel.setCornerRadius(dp(8));
+            example.setBackground(panel);
+            preview.addView(example);
+            TextView action = text("开始观察", 12, t.onAccent);
+            action.setGravity(Gravity.CENTER);
+            action.setPadding(0, dp(7), 0, dp(7));
+            GradientDrawable button = new GradientDrawable();
+            button.setColor(t.accent);
+            button.setCornerRadius(dp(8));
+            action.setBackground(button);
+            LinearLayout.LayoutParams buttonLp = new LinearLayout.LayoutParams(-1, -2);
+            buttonLp.topMargin = dp(8);
+            preview.addView(action, buttonLp);
+            TextView caption = text("预览 · 界面、弹窗与悬浮球统一配色", 10, t.muted);
+            caption.setPadding(0, dp(8), 0, 0);
+            preview.addView(caption);
+        };
+        for (ThemePalette t : ThemePalette.ALL) {
+            LinearLayout card = col();
+            card.setPadding(dp(10), dp(8), dp(10), dp(8));
+            LinearLayout top = row();
+            TextView title = text(t.name, 13, t.text);
+            title.setTypeface(null, Typeface.BOLD);
+            title.setSingleLine();
+            top.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+            TextView check = text("", 14, t.accent);
+            check.setGravity(Gravity.CENTER);
+            top.addView(check, new LinearLayout.LayoutParams(dp(20), dp(22)));
+            card.addView(top);
+            TextView mini = text("↑ TCP   128 B", 10, t.accent);
+            mini.setPadding(dp(6), dp(6), dp(6), dp(6));
+            GradientDrawable panel = new GradientDrawable();
+            panel.setColor(t.surface);
+            panel.setCornerRadius(dp(6));
+            mini.setBackground(panel);
+            LinearLayout.LayoutParams miniLp = new LinearLayout.LayoutParams(-1, -2);
+            miniLp.topMargin = dp(4);
+            card.addView(mini, miniLp);
+            TextView mood = text(t.mood, 10, t.muted);
+            mood.setSingleLine();
+            mood.setPadding(0, dp(4), 0, 0);
+            card.addView(mood);
+            card.setFocusable(true);
+            card.setOnClickListener(v -> {
+                choice[0] = t;
+                render.run();
+            });
+            cards.add(card);
+            checks.add(check);
+        }
+        for (LinearLayout card : cards) grid.addView(card);
+        boolean[] horizontal = {false};
+        gallery.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            boolean wide = r - l >= dp(640);
+            if (wide == horizontal[0])
+                return;
+            horizontal[0] = wide;
+            gallery.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+            gallery.setGravity(Gravity.TOP);
+            LinearLayout.LayoutParams gl =
+                new LinearLayout.LayoutParams(wide ? 0 : -1, -2, wide ? 2 : 0);
+            LinearLayout.LayoutParams pl =
+                new LinearLayout.LayoutParams(wide ? 0 : -1, -2, wide ? 1 : 0);
+            pl.leftMargin = wide ? dp(8) : 0;
+            pl.topMargin = wide ? dp(4) : dp(8);
+            grid.setLayoutParams(gl);
+            preview.setLayoutParams(pl);
+        });
+        render.run();
+        Dialog d = dialog("", box);
+        tool(head, "close", "取消配色", () -> d.dismiss());
+        LinearLayout footer = row();
+        action(footer, "取消", false, () -> d.dismiss());
+        action(footer, "应用配色", true, () -> {
+            prefs.edit().putString("theme", choice[0].id).apply();
+            for (Dialog modal : new ArrayList<>(openDialogs)) modal.dismiss();
+            loadPalette();
+            build();
+            toast("已应用 " + palette.name);
+        });
+        box.addView(footer);
+        sizeDialog(d, true);
     }
     private void opacityDialog() {
         LinearLayout box = col();
@@ -3104,6 +4023,16 @@ final class WorkspaceUi extends ContextThemeWrapper {
         super.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
     }
     private void navigateBack() {
+        if (tab == 2 && historyManaging) {
+            historyManaging = false;
+            historySelection.clear();
+            showTab(2);
+            return;
+        }
+        if (tab == 2 && browserDir != null && !browserDir.equals(browserRoot)) {
+            enterDirectory(browserDir.getParentFile());
+            return;
+        }
         if (tab != 0) {
             showTab(0);
             return;

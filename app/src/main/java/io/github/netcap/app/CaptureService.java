@@ -35,7 +35,18 @@ public final class CaptureService extends Service {
         });
     private WindowManager wm;
     private Context overlayContext;
-    private TextView ball;
+    private CaptureBubble ball;
+    private int ballAnchorX, ballAnchorY;
+    private boolean ballDragging;
+    private final Runnable ballTick = new Runnable() {
+        public void run() {
+            if (ball == null || exiting)
+                return;
+            updateBall();
+            if (ball != null && ball.expanded())
+                windows.postDelayed(this, 1000);
+        }
+    };
     private WindowManager.LayoutParams ballParams;
     private static volatile CaptureService instance;
     private WorkspaceUi workspace;
@@ -309,6 +320,9 @@ public final class CaptureService extends Service {
         active = true;
         stopping = false;
         requestedStop = false;
+        synchronized (LOCK) {
+            live = new JSONObject();
+        }
         startForeground(10, notification("等待 Root 核心启动"),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         String path = intent.getStringExtra("path"), label = intent.getStringExtra("label");
@@ -541,6 +555,9 @@ public final class CaptureService extends Service {
             } catch (Exception ignored) {
             }
         }
+        CaptureService owner = instance;
+        if (owner != null)
+            owner.windows.post(owner::refreshBall);
     }
     private void requestStop() {
         if (!active) {
@@ -550,6 +567,7 @@ public final class CaptureService extends Service {
         }
         requestedStop = true;
         stopping = true;
+        windows.post(this::refreshBall);
         Process p = child;
         if (p != null)
             try {
@@ -564,29 +582,28 @@ public final class CaptureService extends Service {
     private void
     showBall() { // 为什么：使用系统悬浮窗口和触摸分发，不独占 /dev/input 或回注游戏触摸。
         if (exiting || (workspace != null && workspace.isVisible())
-            || !Settings.canDrawOverlays(this) || ball != null)
+            || !Settings.canDrawOverlays(this))
             return;
-        ball = new TextView(overlayContext);
-        ball.setText("⇄");
-        ball.setContentDescription("展开抓包悬浮工作台");
-        ball.setTextColor(0xffb3c5ff);
-        ball.setTextSize(29);
-        ball.setGravity(Gravity.CENTER);
-        android.graphics.drawable.GradientDrawable bg =
-            new android.graphics.drawable.GradientDrawable();
-        bg.setColor(0xe6242631);
-        bg.setCornerRadius(dp(15));
-        bg.setStroke(dp(1), 0xffb3c5ff);
-        ball.setBackground(bg);
-        ball.setElevation(dp(8));
+        if (ball != null) {
+            refreshBall();
+            return;
+        }
+        ball = new CaptureBubble(overlayContext);
+        ball.setOnClickListener(v -> openWorkspace());
         int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-            | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
+            | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
         ballParams = new WindowManager.LayoutParams(dp(52), dp(52),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, flags, PixelFormat.TRANSLUCENT);
+        ballParams.layoutInDisplayCutoutMode =
+            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+        ballParams.setFitInsetsTypes(0);
         ballParams.gravity = Gravity.TOP | Gravity.LEFT;
-        ballParams.x = getSharedPreferences("settings", 0).getInt("ballX", dp(12));
-        ballParams.y = getSharedPreferences("settings", 0).getInt("ballY", dp(180));
-        clampBall();
+        ballAnchorX = getSharedPreferences("settings", 0).getInt("ballX", dp(12));
+        ballAnchorY = getSharedPreferences("settings", 0).getInt("ballY", dp(180));
+        ball.setState(
+            BubbleState.from(snapshot(), active, stopping, SystemClock.elapsedRealtime()));
+        placeBall();
         ball.setOnTouchListener(new View.OnTouchListener() {
             float startX, startY;
             int bx, by;
@@ -594,6 +611,7 @@ public final class CaptureService extends Service {
             public boolean onTouch(View v, android.view.MotionEvent e) {
                 switch (e.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
+                        ballDragging = true;
                         startX = e.getRawX();
                         startY = e.getRawY();
                         bx = ballParams.x;
@@ -605,11 +623,19 @@ public final class CaptureService extends Service {
                         if (Math.hypot(dx, dy) > dp(7))
                             moved = true;
                         if (moved) {
-                            android.graphics.Rect bounds = wm.getCurrentWindowMetrics().getBounds();
-                            ballParams.x =
-                                Math.max(0, Math.min(bounds.width() - dp(52), bx + (int) dx));
-                            ballParams.y =
-                                Math.max(0, Math.min(bounds.height() - dp(52), by + (int) dy));
+                            if (ball == null)
+                                return true;
+                            WindowMetrics metrics = wm.getCurrentWindowMetrics();
+                            android.graphics.Rect bounds = metrics.getBounds();
+                            android.graphics.Insets in =
+                                metrics.getWindowInsets().getInsetsIgnoringVisibility(
+                                    WindowInsets.Type.systemBars()
+                                    | WindowInsets.Type.displayCutout());
+                            BubbleLayout box = BubbleLayout.drag(bounds.width(), bounds.height(),
+                                in.left, in.top, in.right, in.bottom, bx + (int) dx, by + (int) dy,
+                                ballParams.width, ballParams.height, dp(4));
+                            ballParams.x = box.x;
+                            ballParams.y = box.y;
                             try {
                                 wm.updateViewLayout(ball, ballParams);
                             } catch (Exception ignored) {
@@ -617,16 +643,12 @@ public final class CaptureService extends Service {
                         }
                         return true;
                     case MotionEvent.ACTION_UP:
-                        getSharedPreferences("settings", 0)
-                            .edit()
-                            .putInt("ballX", ballParams.x)
-                            .putInt("ballY", ballParams.y)
-                            .apply();
-                        if (!moved) {
-                            openWorkspace();
-                        }
+                        finishBallDrag();
+                        if (!moved)
+                            v.performClick();
                         return true;
                     case MotionEvent.ACTION_CANCEL:
+                        finishBallDrag();
                         return true;
                 }
                 return true;
@@ -634,11 +656,14 @@ public final class CaptureService extends Service {
         });
         try {
             wm.addView(ball, ballParams);
+            refreshBall();
         } catch (Exception e) {
             ball = null;
         }
     }
     private void removeBall() {
+        windows.removeCallbacks(ballTick);
+        ballDragging = false;
         if (ball != null) {
             try {
                 wm.removeView(ball);
@@ -654,16 +679,64 @@ public final class CaptureService extends Service {
             workspace.resized();
         if (ball == null)
             return;
-        clampBall();
+        if (ballDragging)
+            finishBallDrag();
+        placeBall();
         try {
             wm.updateViewLayout(ball, ballParams);
         } catch (Exception ignored) {
         }
     }
-    private void clampBall() {
-        android.graphics.Rect bounds = wm.getCurrentWindowMetrics().getBounds();
-        ballParams.x = Math.max(0, Math.min(ballParams.x, bounds.width() - dp(52)));
-        ballParams.y = Math.max(0, Math.min(ballParams.y, bounds.height() - dp(52)));
+    private void refreshBall() {
+        windows.removeCallbacks(ballTick);
+        if (ball != null && !exiting)
+            ballTick.run();
+    }
+    private void updateBall() {
+        if (ball == null)
+            return;
+        ball.setState(
+            BubbleState.from(snapshot(), active, stopping, SystemClock.elapsedRealtime()));
+        if (!ballDragging) {
+            int x = ballParams.x, y = ballParams.y, w = ballParams.width, h = ballParams.height;
+            placeBall();
+            if (x != ballParams.x || y != ballParams.y || w != ballParams.width
+                || h != ballParams.height)
+                try {
+                    wm.updateViewLayout(ball, ballParams);
+                } catch (Exception ignored) {
+                }
+        }
+    }
+    private void placeBall() {
+        WindowMetrics metrics = wm.getCurrentWindowMetrics();
+        android.graphics.Rect bounds = metrics.getBounds();
+        android.graphics.Insets in = metrics.getWindowInsets().getInsetsIgnoringVisibility(
+            WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+        BubbleLayout box = BubbleLayout.fit(bounds.width(), bounds.height(), in.left, in.top,
+            in.right, in.bottom, ballAnchorX, ballAnchorY, dp(52), dp(ball.expanded() ? 148 : 52),
+            dp(ball.expanded() ? 58 : 52), dp(4));
+        ballParams.width = box.width;
+        ballParams.height = box.height;
+        ballParams.x = box.x;
+        ballParams.y = box.y;
+    }
+    private void finishBallDrag() {
+        ballDragging = false;
+        if (ball == null)
+            return;
+        WindowMetrics metrics = wm.getCurrentWindowMetrics();
+        android.graphics.Insets in = metrics.getWindowInsets().getInsetsIgnoringVisibility(
+            WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+        ballAnchorX = BubbleLayout.anchorX(
+            ballParams.x, ballParams.width, dp(52), metrics.getBounds().width(), in.left, in.right);
+        ballAnchorY = ballParams.y + (ballParams.height - dp(52)) / 2;
+        getSharedPreferences("settings", 0)
+            .edit()
+            .putInt("ballX", ballAnchorX)
+            .putInt("ballY", ballAnchorY)
+            .apply();
+        refreshBall();
     }
     @Override
     public void onDestroy() {

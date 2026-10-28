@@ -2,12 +2,14 @@
 <resources>
     <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
+        <item name="android:textColorPrimary">#F2F4FA</item>
+        <item name="android:textColorSecondary">#BBC3D2</item>
         <item name="android:colorAccent">#B3C5FF</item>
-        <item name="android:windowBackground">#14151D</item>
-        <item name="android:colorBackground">#14151D</item>
+        <item name="android:windowBackground">#10121A</item>
+        <item name="android:colorBackground">#10121A</item>
         <item name="android:colorBackgroundFloating">#282A35</item>
-        <item name="android:statusBarColor">#14151D</item>
-        <item name="android:navigationBarColor">#14151D</item>
+        <item name="android:statusBarColor">#10121A</item>
+        <item name="android:navigationBarColor">#10121A</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
         <item name="android:windowActionModeOverlay">true</item>
@@ -15,6 +17,8 @@
     <style name="OverlayTheme" parent="android:style/Theme.Material.Dialog.Alert">
         <item name="android:alertDialogTheme">@style/OverlayDialogTheme</item>
         <item name="android:fontFamily">sans</item>
+        <item name="android:textColorPrimary">#F2F4FA</item>
+        <item name="android:textColorSecondary">#BBC3D2</item>
         <item name="android:colorAccent">#B3C5FF</item>
         <item name="android:colorBackground">#282A35</item>
         <item name="android:colorBackgroundFloating">#282A35</item>
@@ -26,6 +30,8 @@
     </style>
     <style name="OverlayDialogTheme" parent="android:style/Theme.Material.Dialog.Alert">
         <item name="android:fontFamily">sans</item>
+        <item name="android:textColorPrimary">#F2F4FA</item>
+        <item name="android:textColorSecondary">#BBC3D2</item>
         <item name="android:colorAccent">#B3C5FF</item>
         <item name="android:colorBackground">#282A35</item>
         <item name="android:colorBackgroundFloating">#282A35</item>
@@ -34,5 +40,291 @@
         <item name="android:backgroundDimAmount">0.45</item>
         <item name="android:windowCloseOnTouchOutside">true</item>
         <item name="android:windowSoftInputMode">adjustResize</item>
+    </style>
+<style name="AppJadeTheme" parent="AppTheme">
+        <item name="android:colorAccent">#9DE2C6</item>
+        <item name="android:colorControlActivated">#9DE2C6</item>
+        <item name="android:colorBackground">#0B1715</item>
+        <item name="android:colorBackgroundFloating">#243A33</item>
+        <item name="android:colorButtonNormal">#0B1715</item>
+        <item name="android:windowBackground">#0B1715</item>
+        <item name="android:statusBarColor">#0B1715</item>
+        <item name="android:navigationBarColor">#0B1715</item>
+    </style>
+<style name="OverlayJadeTheme" parent="OverlayTheme">
+        <item name="android:colorAccent">#9DE2C6</item>
+        <item name="android:colorControlActivated">#9DE2C6</item>
+        <item name="android:colorBackground">#243A33</item>
+        <item name="android:colorBackgroundFloating">#243A33</item>
+        <item name="android:colorButtonNormal">#0B1715</item>
+        <item name="android:alertDialogTheme">@style/OverlayDialogJadeTheme</item>
+    </style>
+<style name="OverlayDialogJadeTheme" parent="OverlayDialogTheme">
+        <item name="android:windowBackground">@drawable/bg_modal_jade</item>
+        <item name="android:colorAccent">#9DE2C6</item>
+        <item name="android:colorControlActivated">#9DE2C6</item>
+        <item name="android:colorBackground">#243A33</item>
+        <item name="android:colorBackgroundFloating">#243A33</item>
+        <item name="android:colorButtonNormal">#0B1715</item>
+    </style>
+<style name="AppOceanTheme" parent="AppTheme">
+        <item name="android:colorAccent">#8ED9EE</item>
+        <item name="android:colorControlActivated">#8ED9EE</item>
+        <item name="android:colorBackground">#0B161F</item>
+        <item name="android:colorBackgroundFloating">#233848</item>
+        <item name="android:colorButtonNormal">#0B161F</item>
+        <item name="android:windowBackground">#0B161F</item>
+        <item name="android:statusBarColor">#0B161F</item>
+        <item name="android:navigationBarColor">#0B161F</item>
+    </style>
+<style name="OverlayOceanTheme" parent="OverlayTheme">
+        <item name="android:colorAccent">#8ED9EE</item>
+        <item name="android:colorControlActivated">#8ED9EE</item>
+        <item name="android:colorBackground">#233848</item>
+        <item name="android:colorBackgroundFloating">#233848</item>
+        <item name="android:colorButtonNormal">#0B161F</item>
+        <item name="android:alertDialogTheme">@style/OverlayDialogOceanTheme</item>
+    </style>
+<style name="OverlayDialogOceanTheme" parent="OverlayDialogTheme">
+        <item name="android:windowBackground">@drawable/bg_modal_ocean</item>
+        <item name="android:colorAccent">#8ED9EE</item>
+        <item name="android:colorControlActivated">#8ED9EE</item>
+        <item name="android:colorBackground">#233848</item>
+        <item name="android:colorBackgroundFloating">#233848</item>
+        <item name="android:colorButtonNormal">#0B161F</item>
+    </style>
+<style name="AppPlumTheme" parent="AppTheme">
+        <item name="android:colorAccent">#DDBBF4</item>
+        <item name="android:colorControlActivated">#DDBBF4</item>
+        <item name="android:colorBackground">#19131E</item>
+        <item name="android:colorBackgroundFloating">#382E42</item>
+        <item name="android:colorButtonNormal">#19131E</item>
+        <item name="android:windowBackground">#19131E</item>
+        <item name="android:statusBarColor">#19131E</item>
+        <item name="android:navigationBarColor">#19131E</item>
+    </style>
+<style name="OverlayPlumTheme" parent="OverlayTheme">
+        <item name="android:colorAccent">#DDBBF4</item>
+        <item name="android:colorControlActivated">#DDBBF4</item>
+        <item name="android:colorBackground">#382E42</item>
+        <item name="android:colorBackgroundFloating">#382E42</item>
+        <item name="android:colorButtonNormal">#19131E</item>
+        <item name="android:alertDialogTheme">@style/OverlayDialogPlumTheme</item>
+    </style>
+<style name="OverlayDialogPlumTheme" parent="OverlayDialogTheme">
+        <item name="android:windowBackground">@drawable/bg_modal_plum</item>
+        <item name="android:colorAccent">#DDBBF4</item>
+        <item name="android:colorControlActivated">#DDBBF4</item>
+        <item name="android:colorBackground">#382E42</item>
+        <item name="android:colorBackgroundFloating">#382E42</item>
+        <item name="android:colorButtonNormal">#19131E</item>
+    </style>
+    <style name="AppAmberTheme" parent="AppTheme">
+        <item name="android:colorAccent">#f3d291</item>
+        <item name="android:colorControlActivated">#f3d291</item>
+        <item name="android:colorBackground">#1a1510</item>
+        <item name="android:colorBackgroundFloating">#3a3022</item>
+        <item name="android:colorButtonNormal">#1a1510</item>
+        <item name="android:windowBackground">#1a1510</item>
+        <item name="android:statusBarColor">#1a1510</item>
+        <item name="android:navigationBarColor">#1a1510</item>
+    </style>
+    <style name="OverlayAmberTheme" parent="OverlayTheme">
+        <item name="android:colorAccent">#f3d291</item>
+        <item name="android:colorControlActivated">#f3d291</item>
+        <item name="android:colorBackground">#3a3022</item>
+        <item name="android:colorBackgroundFloating">#3a3022</item>
+        <item name="android:colorButtonNormal">#1a1510</item>
+        <item name="android:alertDialogTheme">@style/OverlayDialogAmberTheme</item>
+    </style>
+    <style name="OverlayDialogAmberTheme" parent="OverlayDialogTheme">
+        <item name="android:colorAccent">#f3d291</item>
+        <item name="android:colorControlActivated">#f3d291</item>
+        <item name="android:colorBackground">#3a3022</item>
+        <item name="android:colorBackgroundFloating">#3a3022</item>
+        <item name="android:colorButtonNormal">#1a1510</item>
+        <item name="android:windowBackground">@drawable/bg_modal_amber</item>
+    </style>
+    <style name="AppRoseTheme" parent="AppTheme">
+        <item name="android:colorAccent">#f3b8d1</item>
+        <item name="android:colorControlActivated">#f3b8d1</item>
+        <item name="android:colorBackground">#1d1118</item>
+        <item name="android:colorBackgroundFloating">#402c38</item>
+        <item name="android:colorButtonNormal">#1d1118</item>
+        <item name="android:windowBackground">#1d1118</item>
+        <item name="android:statusBarColor">#1d1118</item>
+        <item name="android:navigationBarColor">#1d1118</item>
+    </style>
+    <style name="OverlayRoseTheme" parent="OverlayTheme">
+        <item name="android:colorAccent">#f3b8d1</item>
+        <item name="android:colorControlActivated">#f3b8d1</item>
+        <item name="android:colorBackground">#402c38</item>
+        <item name="android:colorBackgroundFloating">#402c38</item>
+        <item name="android:colorButtonNormal">#1d1118</item>
+        <item name="android:alertDialogTheme">@style/OverlayDialogRoseTheme</item>
+    </style>
+    <style name="OverlayDialogRoseTheme" parent="OverlayDialogTheme">
+        <item name="android:colorAccent">#f3b8d1</item>
+        <item name="android:colorControlActivated">#f3b8d1</item>
+        <item name="android:colorBackground">#402c38</item>
+        <item name="android:colorBackgroundFloating">#402c38</item>
+        <item name="android:colorButtonNormal">#1d1118</item>
+        <item name="android:windowBackground">@drawable/bg_modal_rose</item>
+    </style>
+    <style name="AppCopperTheme" parent="AppTheme">
+        <item name="android:colorAccent">#f2b59b</item>
+        <item name="android:colorControlActivated">#f2b59b</item>
+        <item name="android:colorBackground">#1c1311</item>
+        <item name="android:colorBackgroundFloating">#40302a</item>
+        <item name="android:colorButtonNormal">#1c1311</item>
+        <item name="android:windowBackground">#1c1311</item>
+        <item name="android:statusBarColor">#1c1311</item>
+        <item name="android:navigationBarColor">#1c1311</item>
+    </style>
+    <style name="OverlayCopperTheme" parent="OverlayTheme">
+        <item name="android:colorAccent">#f2b59b</item>
+        <item name="android:colorControlActivated">#f2b59b</item>
+        <item name="android:colorBackground">#40302a</item>
+        <item name="android:colorBackgroundFloating">#40302a</item>
+        <item name="android:colorButtonNormal">#1c1311</item>
+        <item name="android:alertDialogTheme">@style/OverlayDialogCopperTheme</item>
+    </style>
+    <style name="OverlayDialogCopperTheme" parent="OverlayDialogTheme">
+        <item name="android:colorAccent">#f2b59b</item>
+        <item name="android:colorControlActivated">#f2b59b</item>
+        <item name="android:colorBackground">#40302a</item>
+        <item name="android:colorBackgroundFloating">#40302a</item>
+        <item name="android:colorButtonNormal">#1c1311</item>
+        <item name="android:windowBackground">@drawable/bg_modal_copper</item>
+    </style>
+    <style name="AppLimeTheme" parent="AppTheme">
+        <item name="android:colorAccent">#c8df9b</item>
+        <item name="android:colorControlActivated">#c8df9b</item>
+        <item name="android:colorBackground">#14190d</item>
+        <item name="android:colorBackgroundFloating">#303b24</item>
+        <item name="android:colorButtonNormal">#14190d</item>
+        <item name="android:windowBackground">#14190d</item>
+        <item name="android:statusBarColor">#14190d</item>
+        <item name="android:navigationBarColor">#14190d</item>
+    </style>
+    <style name="OverlayLimeTheme" parent="OverlayTheme">
+        <item name="android:colorAccent">#c8df9b</item>
+        <item name="android:colorControlActivated">#c8df9b</item>
+        <item name="android:colorBackground">#303b24</item>
+        <item name="android:colorBackgroundFloating">#303b24</item>
+        <item name="android:colorButtonNormal">#14190d</item>
+        <item name="android:alertDialogTheme">@style/OverlayDialogLimeTheme</item>
+    </style>
+    <style name="OverlayDialogLimeTheme" parent="OverlayDialogTheme">
+        <item name="android:colorAccent">#c8df9b</item>
+        <item name="android:colorControlActivated">#c8df9b</item>
+        <item name="android:colorBackground">#303b24</item>
+        <item name="android:colorBackgroundFloating">#303b24</item>
+        <item name="android:colorButtonNormal">#14190d</item>
+        <item name="android:windowBackground">@drawable/bg_modal_lime</item>
+    </style>
+    <style name="AppSlateTheme" parent="AppTheme">
+        <item name="android:colorAccent">#d0d9e2</item>
+        <item name="android:colorControlActivated">#d0d9e2</item>
+        <item name="android:colorBackground">#121518</item>
+        <item name="android:colorBackgroundFloating">#2d343a</item>
+        <item name="android:colorButtonNormal">#121518</item>
+        <item name="android:windowBackground">#121518</item>
+        <item name="android:statusBarColor">#121518</item>
+        <item name="android:navigationBarColor">#121518</item>
+    </style>
+    <style name="OverlaySlateTheme" parent="OverlayTheme">
+        <item name="android:colorAccent">#d0d9e2</item>
+        <item name="android:colorControlActivated">#d0d9e2</item>
+        <item name="android:colorBackground">#2d343a</item>
+        <item name="android:colorBackgroundFloating">#2d343a</item>
+        <item name="android:colorButtonNormal">#121518</item>
+        <item name="android:alertDialogTheme">@style/OverlayDialogSlateTheme</item>
+    </style>
+    <style name="OverlayDialogSlateTheme" parent="OverlayDialogTheme">
+        <item name="android:colorAccent">#d0d9e2</item>
+        <item name="android:colorControlActivated">#d0d9e2</item>
+        <item name="android:colorBackground">#2d343a</item>
+        <item name="android:colorBackgroundFloating">#2d343a</item>
+        <item name="android:colorButtonNormal">#121518</item>
+        <item name="android:windowBackground">@drawable/bg_modal_slate</item>
+    </style>
+    <style name="AppMidnightTheme" parent="AppTheme">
+        <item name="android:colorAccent">#9fb8f7</item>
+        <item name="android:colorControlActivated">#9fb8f7</item>
+        <item name="android:colorBackground">#0b1020</item>
+        <item name="android:colorBackgroundFloating">#232c46</item>
+        <item name="android:colorButtonNormal">#0b1020</item>
+        <item name="android:windowBackground">#0b1020</item>
+        <item name="android:statusBarColor">#0b1020</item>
+        <item name="android:navigationBarColor">#0b1020</item>
+    </style>
+    <style name="OverlayMidnightTheme" parent="OverlayTheme">
+        <item name="android:colorAccent">#9fb8f7</item>
+        <item name="android:colorControlActivated">#9fb8f7</item>
+        <item name="android:colorBackground">#232c46</item>
+        <item name="android:colorBackgroundFloating">#232c46</item>
+        <item name="android:colorButtonNormal">#0b1020</item>
+        <item name="android:alertDialogTheme">@style/OverlayDialogMidnightTheme</item>
+    </style>
+    <style name="OverlayDialogMidnightTheme" parent="OverlayDialogTheme">
+        <item name="android:colorAccent">#9fb8f7</item>
+        <item name="android:colorControlActivated">#9fb8f7</item>
+        <item name="android:colorBackground">#232c46</item>
+        <item name="android:colorBackgroundFloating">#232c46</item>
+        <item name="android:colorButtonNormal">#0b1020</item>
+        <item name="android:windowBackground">@drawable/bg_modal_midnight</item>
+    </style>
+    <style name="AppLavenderTheme" parent="AppTheme">
+        <item name="android:colorAccent">#c8bcf3</item>
+        <item name="android:colorControlActivated">#c8bcf3</item>
+        <item name="android:colorBackground">#171423</item>
+        <item name="android:colorBackgroundFloating">#352e4a</item>
+        <item name="android:colorButtonNormal">#171423</item>
+        <item name="android:windowBackground">#171423</item>
+        <item name="android:statusBarColor">#171423</item>
+        <item name="android:navigationBarColor">#171423</item>
+    </style>
+    <style name="OverlayLavenderTheme" parent="OverlayTheme">
+        <item name="android:colorAccent">#c8bcf3</item>
+        <item name="android:colorControlActivated">#c8bcf3</item>
+        <item name="android:colorBackground">#352e4a</item>
+        <item name="android:colorBackgroundFloating">#352e4a</item>
+        <item name="android:colorButtonNormal">#171423</item>
+        <item name="android:alertDialogTheme">@style/OverlayDialogLavenderTheme</item>
+    </style>
+    <style name="OverlayDialogLavenderTheme" parent="OverlayDialogTheme">
+        <item name="android:colorAccent">#c8bcf3</item>
+        <item name="android:colorControlActivated">#c8bcf3</item>
+        <item name="android:colorBackground">#352e4a</item>
+        <item name="android:colorBackgroundFloating">#352e4a</item>
+        <item name="android:colorButtonNormal">#171423</item>
+        <item name="android:windowBackground">@drawable/bg_modal_lavender</item>
+    </style>
+    <style name="AppCoffeeTheme" parent="AppTheme">
+        <item name="android:colorAccent">#ddc5ae</item>
+        <item name="android:colorControlActivated">#ddc5ae</item>
+        <item name="android:colorBackground">#191411</item>
+        <item name="android:colorBackgroundFloating">#3a302a</item>
+        <item name="android:colorButtonNormal">#191411</item>
+        <item name="android:windowBackground">#191411</item>
+        <item name="android:statusBarColor">#191411</item>
+        <item name="android:navigationBarColor">#191411</item>
+    </style>
+    <style name="OverlayCoffeeTheme" parent="OverlayTheme">
+        <item name="android:colorAccent">#ddc5ae</item>
+        <item name="android:colorControlActivated">#ddc5ae</item>
+        <item name="android:colorBackground">#3a302a</item>
+        <item name="android:colorBackgroundFloating">#3a302a</item>
+        <item name="android:colorButtonNormal">#191411</item>
+        <item name="android:alertDialogTheme">@style/OverlayDialogCoffeeTheme</item>
+    </style>
+    <style name="OverlayDialogCoffeeTheme" parent="OverlayDialogTheme">
+        <item name="android:colorAccent">#ddc5ae</item>
+        <item name="android:colorControlActivated">#ddc5ae</item>
+        <item name="android:colorBackground">#3a302a</item>
+        <item name="android:colorBackgroundFloating">#3a302a</item>
+        <item name="android:colorButtonNormal">#191411</item>
+        <item name="android:windowBackground">@drawable/bg_modal_coffee</item>
     </style>
 </resources>

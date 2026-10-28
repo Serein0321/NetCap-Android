@@ -12,12 +12,14 @@ import java.util.Locale;
 final class HexDumpView extends View {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Rect clip = new Rect();
+    private final ThemePalette theme;
     private byte[] data = new byte[0];
     private int columns = 8, rowHeight;
     private float cell, inset, hexLeft, asciiLeft, baseline;
 
     HexDumpView(Context context) {
         super(context);
+        theme = ThemeUi.palette(context);
         setContentDescription("原始记录：偏移、十六进制字节、ASCII 字符");
         paint.setTypeface(Typeface.MONOSPACE);
         paint.setTextSize(12 * getResources().getDisplayMetrics().scaledDensity);
@@ -59,17 +61,17 @@ final class HexDumpView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        canvas.drawColor(0xff171923);
+        canvas.drawColor(theme.bg);
         canvas.getClipBounds(clip);
         if (clip.top < rowHeight) {
-            paint.setColor(0xff252936);
+            paint.setColor(theme.active);
             canvas.drawRect(0, 0, getWidth(), rowHeight, paint);
-            line(canvas, "偏移", inset, baseline, 0xffaeb8ce);
+            line(canvas, "偏移", inset, baseline, theme.muted);
             for (int i = 0; i < columns; i++) {
                 line(canvas, Integer.toHexString(i).toUpperCase(Locale.ROOT), hexX(i) + cell * .5f,
-                    baseline, 0xffaeb8ce);
+                    baseline, theme.muted);
             }
-            line(canvas, "字符", asciiLeft, baseline, 0xffaeb8ce);
+            line(canvas, "字符", asciiLeft, baseline, theme.muted);
         }
         int rows = (data.length + columns - 1) / columns;
         int first = Math.max(0, clip.top / rowHeight - 1);
@@ -78,19 +80,19 @@ final class HexDumpView extends View {
             int offset = row * columns;
             float top = (row + 1) * rowHeight;
             if ((row & 1) != 0) {
-                paint.setColor(0xff1e212d);
+                paint.setColor(theme.surface);
                 canvas.drawRect(0, top, getWidth(), top + rowHeight, paint);
             }
             line(canvas, String.format(Locale.ROOT, "%06X", offset), inset, top + baseline,
-                0xff929eb8);
+                theme.muted);
             for (int col = 0; col < columns && offset + col < data.length; col++) {
                 byte value = data[offset + col];
-                line(canvas, DisplayFormat.hexByte(value), hexX(col), top + baseline, 0xffeef2fa);
+                line(canvas, DisplayFormat.hexByte(value), hexX(col), top + baseline, theme.text);
                 line(canvas, String.valueOf(DisplayFormat.ascii(value)), asciiLeft + col * cell,
-                    top + baseline, 0xffb7c9ef);
+                    top + baseline, theme.accent);
             }
         }
-        paint.setColor(0xff3b4051);
+        paint.setColor(theme.edge);
         float end = Math.min(getHeight(), (rows + 1) * rowHeight);
         canvas.drawLine(hexLeft - cell, 0, hexLeft - cell, end, paint);
         canvas.drawLine(asciiLeft - cell * .5f, 0, asciiLeft - cell * .5f, end, paint);

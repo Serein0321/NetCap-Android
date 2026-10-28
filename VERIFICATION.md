@@ -1,5 +1,51 @@
 # 验证记录
 
+## 0.4.3 单击浏览与长按操作（2026-10-28）
+
+- APK：`NetCap-0.4.3-direct-open-test.apk`，3,082,047字节，versionCode=10，最低API33/目标API36。
+- SHA-256：`A9E406CCE095EF2A39431C21E18054A40EC6F9DEAFC574398F00A180B2505CCF`。
+- SDK36/NDK29双ABI构建与v3签名通过，包内双ABI与构建逐字节一致。签名证书仍为`26005ecac9086b722b702570edac285ea14b5bdb4ca47d0f3c60055dd1a9ac84`。
+- 原有17634项主机回归与新增35项归档断言通过，共17669项；符号链接运行检查因Windows权限跳过。
+- ZIP验证包括多级/隐式/空目录、UTF-8、有界高压缩数据预览、源文件不变、不安全/重复路径、数量/目录范围限制、截断、ZIP64标记、文件变化。目录浏览不解压，不写入用户文件。
+- 文件夹含会话目录单击进入，文件直接按类型打开；长按菜单、多选、移除每行三个点与原生VectorDrawable均编译检查。实际Android点击/长按、返回键、图标与横竖屏仍待手机验收。
+- CaptureService、native/core.cpp、WorkspaceFiles、PacketStore、PacketNotes、TlsInspector、IntegrityReport相对0.4.2归档逐字节一致。采集与文件操作算法没有本轮变化。
+- 没有启动虚拟机、安装手机或操作用户真实抓包文件，没有自动更新GitHub或创建Release。使用见[DIRECT_OPEN.md](DIRECT_OPEN.md)。
+
+## 0.4.2 目录工作区与交互修复（2026-10-28）
+
+- APK：`NetCap-0.4.2-files-workspace-test.apk`，3,073,708字节，versionCode=9，最低API33 / 目标API36。
+- SHA-256：`E43E2844E4D736D52C9FF740DC475F77913F2485BCF65ABB8792C2A7722DAC7D`。
+- SDK36/NDK29双ABI编译与v3签名通过，包内双ABI与构建产物逐字节一致。证书与旧版相同：`26005ecac9086b722b702570edac285ea14b5bdb4ca47d0f3c60055dd1a9ac84`。
+- 主机回归5289项数据、1650项会话/几何、1595项TLS/主题、8043项画廊/球状态、1057项真实文件/拖动断言通过，共17634项。符号链接创建受Windows权限限制，两个运行测试明确跳过。
+- 合成目录真实执行新建/多级/复制/改名/移动/删除；移动后原包哈希、索引查询与收藏仍一致。覆盖活动/祖先/根/会话内部/越界保护、路径重映射、目标同名及提交竞争不覆盖、源文件变化校验、复制取消清理、部分移动/删除、长Unicode副本名，以及500组指针位移。
+- 用户图片支持两个实现原因：主题空GridLayout回调不能生成首帧内容；148×58胶囊拖动走锚点换算增加45dp。现分别用首帧直接测量的ThemeGrid和直接平移夹界修复，开始请求成功后调用工作台收起。Android原生界面的实际测量/触摸尚未运行。
+- native/core.cpp、TlsInspector、PacketStore、PacketNotes、IntegrityReport与0.4.1归档逐字节一致。SessionLibrary改为支持嵌套会话且内部受保护，WorkspaceFiles为实际文件操作模块。
+- 本轮没有启动虚拟机、安装手机或对用户真实抓包进行文件操作；Root持续采集、系统存储权限/文件接口、主题首帧、旋转/拖动和移动后分析/导出待手机验收。
+- 未自动更新GitHub或创建Release。详见[FILES_WORKSPACE.md](FILES_WORKSPACE.md)。
+
+## 0.4.1 主题画廊与采集胶囊（2026-10-28）
+
+- APK：`NetCap-0.4.1-gallery-bubble-test.apk`，3,061,420字节，versionCode=8，最低API33/目标API36。
+- SHA-256：`932745F34905DF8640A72A02CEB526F7901932E942EC2C2356D68F67637AA9DF`。
+- SDK36/NDK29双ABI编译、v3签名与包内双ABI核心/构建产物逐字节核对通过。证书与旧版相同：`26005ecac9086b722b702570edac285ea14b5bdb4ca47d0f3c60055dd1a9ac84`。
+- 主机回归：5289项数据、1650项会话/安全几何、1595项TLS/12主题、8043项画廊/悬浮球断言通过，共16577项。符号链接运行测试因Windows权限跳过。
+- 画廊/悬浮球测试覆盖旧主题ID、列数/大字体、状态阶段与旧会话清零、主会话/未知分离、长时间与极值缩写、停止冻结、2000组安全区和拖动锚点组合；TLS真实MemoryBIO样本与既有数据回归本轮重跑通过。
+- 代码/构建证据不代表Android显示或触摸已运行。没有启动虚拟机、安装手机；卡片实际测量与旋转、系统控件、胶囊状态显示/拖动/边缘、Root持续采集均待手机验收。
+- native/core.cpp、TlsInspector、PacketStore、IntegrityReport、SessionLibrary与0.4.0归档逐字节一致。服务修改仅显示快照初始化及悬浮显示生命周期，不改变采集参数/文件写盘/归属算法。
+- 未自动推送GitHub或创建Release。用法见[GALLERY_BUBBLE.md](GALLERY_BUBBLE.md)。
+
+## 0.4.0 TLS观察与全局配色（2026-10-28）
+
+- APK：`NetCap-0.4.0-tls-theme-test.apk`，3,044,414字节，versionCode=7，最低API33 / 目标API36。
+- SHA-256：`C07C040172C827BFB6F3D88701656CDE99A1AA384E1C62D20455D2EF9118E9E3`。
+- SDK36/NDK29双ABI构建及v3签名验证通过；包内核心与构建目录逐字节一致。证书仍为`26005ecac9086b722b702570edac285ea14b5bdb4ca47d0f3c60055dd1a9ac84`，与旧版本相同。
+- 主机数据回归5289项、会话/几何1650项、TLS/主题1427项断言通过。符号链接运行检查仍因Windows权限跳过，未冒称执行。
+- TLS使用Python/OpenSSL MemoryBIO真实生成TLS1.2/IPv4与TLS1.3/IPv6，各39个合成TCP包；故意拆记录头、乱序、重传。读取并核对SNI、选定版本、ALPN与TLS1.2证书；TLS1.3加密字段明确不可见。全程未创建网络socket。
+- 合成边界检查包括跨TCP段/跨TLS记录握手、TCP回绕、重叠冲突/缺口、HRR、兼容CCS、ECH、畸形扩展、截断、1000份随机输入、端口不作证、复用/接口隔离、8192段上限后的所选包定位和四主题对比度/回退。
+- 源码核对：native/core.cpp、PacketStore、PacketFilter、IntegrityReport、SessionLibrary与0.3.1源归档逐字节一致。服务仅配色接入（不改变采集策略），新增TLS分析独立只读模块。
+- Android双ABI只完成编译与包检查；没有启动虚拟机、安装手机或执行新增UI/IME/Root运行验证。主题持久化与切换过程、系统控件/悬浮球、TLS页横竖屏布局及持续抓包中切主题仍需手机验收。
+- 不包含TLS解密、调试代理、系统CA配置或目标应用注入。未自动上传GitHub、未创建Release。使用与边界见[TLS_THEME.md](TLS_THEME.md)。
+
 ## 0.3.1 会话库与界面完善（2026-10-26）
 
 - APK：`NetCap-0.3.1-library-test.apk`，3,023,705 字节，versionCode=6，最低 API33 / 目标 API36。

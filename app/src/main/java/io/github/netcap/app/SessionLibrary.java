@@ -54,20 +54,15 @@ final class SessionLibrary {
         if (Files.isSymbolicLink(target) || !Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)
             || !Files.isRegularFile(target.resolve("session.json"), LinkOption.NOFOLLOW_LINKS))
             throw new IOException("不是可管理的会话目录");
-        Path real = target.toRealPath();
-        boolean allowed = false;
-        for (File root : roots)
-            if (real.getParent().equals(root.getCanonicalFile().toPath())) {
-                allowed = true;
-                break;
+        IOException failure = null;
+        for (File root : roots) try {
+                WorkspaceFiles files = new WorkspaceFiles(root);
+                files.guard(session, active, false);
+                return;
+            } catch (IOException e) {
+                failure = e;
             }
-        if (!allowed)
-            throw new IOException("会话不在已登记的保存目录中");
-        if (active != null) {
-            Path live = active.getCanonicalFile().toPath();
-            if (live.startsWith(real) || real.startsWith(live))
-                throw new IOException("正在抓取的会话不能修改或删除");
-        }
+        throw new IOException("会话不在可管理的保存目录中，或正在采集/位于其他会话内部", failure);
     }
     static void validLeaf(String name, int max) throws IOException {
         if (name == null || name.trim().isEmpty() || name.equals(".") || name.equals("..")
