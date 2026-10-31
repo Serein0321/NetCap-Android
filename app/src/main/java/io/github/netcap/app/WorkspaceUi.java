@@ -44,6 +44,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
     private boolean visible, disposed;
     private int rootRequests;
     private boolean resumeAfterRoot;
+    private Runnable afterStorageAccess;
     private final List<Dialog> rootHidden = new ArrayList<>();
     private final List<Runnable> afterRoot = new ArrayList<>();
     private TextView processLabel, processMemory;
@@ -146,7 +147,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
     }
     void show() {
         if (rootRequests > 0) {
-            toast("请先完成 Root 管理器授权，工作台随后恢复");
+            toast("请先完成系统授权，工作台随后恢复");
             return;
         }
         if (disposed || isVisible())
@@ -183,6 +184,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
         hide();
         ui.removeCallbacksAndMessages(null);
         afterRoot.clear();
+        afterStorageAccess = null;
         catalog.close();
         processIo.shutdownNow();
         io.shutdownNow();
@@ -3272,14 +3274,8 @@ final class WorkspaceUi extends ContextThemeWrapper {
             d.dismiss();
             ProgressDialog wait = progress("导出中", "正在读取全部原始记录…", false);
             io.execute(() -> {
-                File partial = new File(dir, "." + filename + "." + UUID.randomUUID() + ".partial");
                 try {
-                    try (FileOutputStream out = new FileOutputStream(partial)) {
-                        PacketStore.export(session, out, type);
-                        out.getFD().sync();
-                    }
-                    if (target.exists() || !partial.renameTo(target))
-                        throw new IOException("文件已生成，但最终命名失败。临时文件：" + partial);
+                    ExportFiles.save(dir, filename, out -> PacketStore.export(session, out, type));
                     post(() -> {
                         wait.dismiss();
                         if (isVisible())
@@ -3294,7 +3290,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
                 } catch (Exception e) {
                     post(() -> {
                         wait.dismiss();
-                        error("导出失败，临时文件已保留", e);
+                        error("导出失败", e);
                     });
                 }
             });
@@ -3417,7 +3413,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
         TextView title = text("偏好设置", 23, TEXT);
         title.setTypeface(null, Typeface.BOLD);
         heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView version = text("NetCap · 0.4.3", 11, ACCENT);
+        TextView version = text("NetCap · 0.4.4", 11, ACCENT);
         version.setPadding(dp(9), dp(5), dp(9), dp(5));
         version.setBackground(background(palette.active, 9));
         heading.addView(version);
@@ -3727,6 +3723,54 @@ final class WorkspaceUi extends ContextThemeWrapper {
     private interface FolderChosen {
         void choose(File f);
     }
+    private void withStorageAccess(File target, Runnable granted) {
+        try {
+            boolean own = ExportFiles.contains(getDataDir(), target);
+            for (File root : getExternalFilesDirs(null))
+                own |= ExportFiles.contains(root, target);
+            for (File root : getExternalCacheDirs())
+                own |= ExportFiles.contains(root, target);
+            if (own || Environment.isExternalStorageManager()) {
+                granted.run();
+                return;
+            }
+        } catch (IOException e) {
+            error("无法检查目录权限", e);
+            return;
+        }
+        alert().setTitle("允许访问共享存储")
+            .setMessage("保存或读取此位置需要允许 NetCap 管理所有文件：\n"
+                + target.getAbsolutePath()
+                + "\n\n在接下来的系统页面打开授权，返回后会继续当前操作。"
+                + "也可以取消，改用应用文件目录。")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("去授权", (d, which) -> {
+                if (afterStorageAccess != null)
+                    return;
+                afterStorageAccess = granted;
+                pauseForRoot();
+                try {
+                    // 直接启动承接页，保留被隐藏的对话框，不走会关闭选择器的 startActivity。
+                    super.startActivity(new Intent(this, StorageAccessActivity.class)
+                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                } catch (Exception e) {
+                    afterStorageAccess = null;
+                    resumeFromRoot();
+                    error("无法打开存储授权", e);
+                }
+            }).show();
+    }
+    void storageAccessReturned() {
+        Runnable next = afterStorageAccess;
+        if (next == null || disposed)
+            return;
+        afterStorageAccess = null;
+        resumeFromRoot();
+        if (Environment.isExternalStorageManager())
+            post(next);
+        else
+            toast("未获得共享存储权限，可重新授权或改用应用文件目录");
+    }
     private void folderDialog(File start, FolderChosen chosen) {
         if (!start.isDirectory() && !start.mkdirs()) {
             toast("无法打开默认目录，请检查存储权限");
@@ -3742,6 +3786,8 @@ final class WorkspaceUi extends ContextThemeWrapper {
         path.setSingleLine();
         path.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
         box.addView(path, new LinearLayout.LayoutParams(-1, dp(24)));
+        TextView access = text("共享目录需允许管理所有文件；应用文件目录无需额外授权", 11, MUTED);
+        box.addView(access);
         LinearLayout toolbar = row();
         box.addView(toolbar);
         FrameLayout area = new FrameLayout(this);
@@ -3826,9 +3872,14 @@ final class WorkspaceUi extends ContextThemeWrapper {
                                  "授予共享存储访问"},
                        (x, n) -> {
                            if (n < 2) {
-                               current[0] = n == 0 ? Environment.getExternalStorageDirectory()
-                                                   : getExternalFilesDir(null);
-                               scan[0].run();
+                               File location = n == 0 ? Environment.getExternalStorageDirectory()
+                                                      : getExternalFilesDir(null);
+                               withStorageAccess(location, () -> {
+                                   if (!d.isShowing())
+                                       return;
+                                   current[0] = location;
+                                   scan[0].run();
+                               });
                            } else if (n == 2)
                                editTextDialog("转到目录", current[0].getAbsolutePath(), value -> {
                                    File target = new File(value);
@@ -3837,16 +3888,18 @@ final class WorkspaceUi extends ContextThemeWrapper {
                                    current[0] = target;
                                    scan[0].run();
                                });
-                           else if (Environment.isExternalStorageManager())
-                               toast("已获得共享存储访问权限");
                            else
-                               startActivity(new Intent(
-                                   Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                   Uri.parse("package:" + getPackageName())));
+                               withStorageAccess(Environment.getExternalStorageDirectory(),
+                                   () -> { if (d.isShowing()) scan[0].run(); });
                        })
                    .setNegativeButton("取消", null)
                    .show();
-        tool(toolbar, "new", "新建文件夹", () -> nameDialog(current[0], scan[0]));
+        tool(toolbar, "new", "新建文件夹", () -> {
+            File parent = current[0];
+            withStorageAccess(parent, () -> {
+                if (d.isShowing()) nameDialog(parent, scan[0]);
+            });
+        });
         tool(toolbar, "up", "上一级目录", () -> {
             File up = current[0].getParentFile();
             if (up != null) {
@@ -3867,8 +3920,12 @@ final class WorkspaceUi extends ContextThemeWrapper {
                 current[0] = f;
                 scan[0].run();
             } else if (files) {
-                d.dismiss();
-                chosen.choose(f);
+                withStorageAccess(f, () -> {
+                    if (d.isShowing()) {
+                        d.dismiss();
+                        chosen.choose(f);
+                    }
+                });
             }
         });
         list.setOnItemLongClickListener((a, v, i, id) -> {
@@ -3880,15 +3937,41 @@ final class WorkspaceUi extends ContextThemeWrapper {
         });
         if (!files) {
             LinearLayout footer = row();
+            boolean[] checking = {false};
             action(footer, "取消", false, () -> d.dismiss());
             action(footer, "使用此目录", true, () -> {
-                File f = current[0];
-                if (!f.isDirectory() || !f.canWrite()) {
-                    toast("目录不可写，请选择其他位置或授予访问权限");
+                if (checking[0])
                     return;
-                }
-                chosen.choose(f);
-                d.dismiss();
+                File f = current[0];
+                withStorageAccess(f, () -> {
+                    if (!d.isShowing())
+                        return;
+                    checking[0] = true;
+                    access.setText("正在检查目录能否实际写入…");
+                    io.execute(() -> {
+                        try {
+                            ExportFiles.checkWritable(f);
+                            post(() -> {
+                                checking[0] = false;
+                                if (!d.isShowing())
+                                    return;
+                                chosen.choose(f);
+                                d.dismiss();
+                            });
+                        } catch (Exception e) {
+                            post(() -> {
+                                checking[0] = false;
+                                if (!d.isShowing())
+                                    return;
+                                access.setText("此目录无法写入，请更换目录或检查存储权限");
+                                error("无法使用此目录", new IOException(
+                                    f.getAbsolutePath() + "\n已实际尝试创建文件但失败。"
+                                        + "Android/data 等受保护位置即使授权也可能无法访问。\n"
+                                        + e.getMessage(), e));
+                            });
+                        }
+                    });
+                });
             });
             box.addView(footer);
         }

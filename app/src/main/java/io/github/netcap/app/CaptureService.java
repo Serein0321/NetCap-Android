@@ -56,6 +56,14 @@ public final class CaptureService extends Service {
     static boolean isRunning() {
         return instance != null;
     }
+    static void storageAccessReturned() {
+        CaptureService owner = instance;
+        if (owner != null)
+            owner.windows.post(() -> {
+                if (owner.workspace != null)
+                    owner.workspace.storageAccessReturned();
+            });
+    }
     void openWorkspace() {
         if (exiting)
             return;
