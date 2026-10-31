@@ -65,6 +65,12 @@ public final class SelfTest extends Instrumentation {
         StringBuilder log = new StringBuilder();
         try {
             Context c = getTargetContext();
+            if (arguments != null && arguments.containsKey("storage")) {
+                storageCheck(c, "granted".equals(arguments.getString("storage")), log);
+                result.putString("stream", log.toString());
+                finish(-1, result);
+                return;
+            }
             File a = dir(c, "source");
             byte[] pcap = fixture(175);
             JSONObject m = new JSONObject().put("label", "自动检查");
@@ -193,7 +199,7 @@ public final class SelfTest extends Instrumentation {
             require(PacketStore.count(reread) == 1200, "跨段合并导出回读");
             log.append("7200 万字节原生写盘、64 MiB 分段、1200 包停止排空、跨段导出回读：通过\n");
             PacketFilter filter = new PacketFilter();
-            filter.direction = 255;
+            filter.direction = 2; // PCAP 导入没有方向信息，实际索引值为 2。
             require(PacketStore.query(a, -1, filter, () -> false).records.size() == 128,
                 "新分页128与未知方向筛选");
             filter.ids = new HashSet<>(Arrays.asList(1L, 175L));
@@ -241,6 +247,48 @@ public final class SelfTest extends Instrumentation {
         } catch (Throwable e) {
             result.putString("stream", log + "失败：" + e.toString());
             finish(0, result);
+        }
+    }
+    private void storageCheck(Context c, boolean granted, StringBuilder log) throws Exception {
+        require(android.os.Environment.isExternalStorageManager() == granted, "存储授权状态");
+        File source = dir(c, "export_source");
+        byte[] data = "storage export fixture".getBytes(StandardCharsets.UTF_8);
+        java.nio.file.Files.write(new File(source, "evidence.bin").toPath(), data);
+        String name = "NetCap-storage-check-" + UUID.randomUUID() + ".zip";
+        File own = new File(c.getExternalFilesDir(null), name);
+        File root = android.os.Environment.getExternalStorageDirectory();
+        File shared = new File(root, name);
+        File folder = new File(root, "NetCap-storage-check-" + UUID.randomUUID());
+        File nested = new File(folder, name);
+        try {
+            ExportFiles.save(own.getParentFile(), name, out -> PacketStore.export(source, out, "zip"));
+            require(own.isFile() && own.length() > 0, "默认应用目录导出");
+            if (!granted) {
+                boolean denied = false;
+                try {
+                    ExportFiles.save(root, name, out -> PacketStore.export(source, out, "zip"));
+                } catch (IOException e) {
+                    denied = e.getMessage().contains("未生成可保留的临时文件");
+                    log.append("共享根目录未授权：已正确拒绝，未谎报保留临时文件\n");
+                }
+                require(denied && !shared.exists(), "未授权共享目录写入失败提示");
+            } else {
+                ExportFiles.save(root, name, out -> PacketStore.export(source, out, "zip"));
+                require(folder.mkdir(), "共享子目录创建");
+                ExportFiles.save(folder, name, out -> PacketStore.export(source, out, "zip"));
+                for (File zip : new File[] {shared, nested})
+                    try (java.util.zip.ZipFile read = new java.util.zip.ZipFile(zip);
+                         InputStream in = read.getInputStream(read.getEntry("evidence.bin"));
+                         ByteArrayOutputStream bytes = new ByteArrayOutputStream()) {
+                        PacketStore.copy(in, bytes);
+                        require(Arrays.equals(data, bytes.toByteArray()), "共享位置 ZIP 回读");
+                    }
+                log.append("授权后内部存储根目录、共享子目录导出及 ZIP 原字节回读：通过\n");
+            }
+            log.append("默认应用目录导出：通过\n");
+        } finally {
+            for (File file : new File[] {own, shared, nested, folder})
+                if (file.exists()) require(file.delete(), "清理自建测试文件：" + file);
         }
     }
 }
