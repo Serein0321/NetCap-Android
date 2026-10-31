@@ -100,6 +100,21 @@ final class WorkspaceUi extends ContextThemeWrapper {
     private boolean clipboardMove;
     private List<WorkspaceFiles.Item> fileEntries = new ArrayList<>();
     private int historyEpoch;
+    private FileActionMenu fileActionMenu;
+    private static final class FileActionMenu {
+        final Dialog dialog;
+        final View target, content;
+        final Drawable originalBackground;
+        final int x, y;
+        FileActionMenu(Dialog dialog, View target, View content, int x, int y) {
+            this.dialog = dialog;
+            this.target = target;
+            this.content = content;
+            this.x = x;
+            this.y = y;
+            originalBackground = target.getBackground();
+        }
+    }
     private volatile int relatedEpoch;
 
     private BaseAdapter packetAdapter;
@@ -227,6 +242,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
     }
     void resized() {
         if (isVisible()) {
+            dismissFileMenu();
             getWindow().setLayout(-1, -1);
             if (wideLayout != landscape())
                 build();
@@ -461,6 +477,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
         shell.requestFocus();
     }
     private void showTab(int index) {
+        dismissFileMenu();
         tab = index;
         generation++;
         queryBusy = false;
@@ -718,6 +735,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
             configureWindow(d.getWindow(), true);
             openDialogs.add(d);
             d.setOnDismissListener(x -> {
+                restoreFileMenu(d);
                 openDialogs.remove(d);
                 dialogBackActions.remove(d);
                 fixedDialogs.remove(d);
@@ -810,6 +828,10 @@ final class WorkspaceUi extends ContextThemeWrapper {
             android.graphics.Insets safe = metrics.getWindowInsets().getInsetsIgnoringVisibility(
                 WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
             int ime = in == null ? 0 : in.getInsets(WindowInsets.Type.ime()).bottom;
+            if (fileActionMenu != null && fileActionMenu.dialog == d) {
+                fitFileMenu(fileActionMenu, bounds, safe, ime);
+                return;
+            }
             int available =
                 Math.max(1, bounds.height() - safe.top - Math.max(safe.bottom, ime) - dp(16));
             ModalGeometry limit =
@@ -2342,6 +2364,19 @@ final class WorkspaceUi extends ContextThemeWrapper {
         page.addView(hint);
         FrameLayout area = new FrameLayout(this);
         ListView list = new ListView(this);
+        // 不拦截列表的点击/滚动，只记录此次手势的实际屏幕坐标。
+        final float[] press = {Float.NaN, Float.NaN};
+        list.setOnTouchListener((v, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN
+                || event.getActionMasked() == MotionEvent.ACTION_MOVE) {
+                press[0] = event.getRawX();
+                press[1] = event.getRawY();
+            } else if (event.getActionMasked() == MotionEvent.ACTION_UP
+                || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                press[0] = press[1] = Float.NaN;
+            }
+            return false;
+        });
         list.setDivider(new ColorDrawable(0));
         list.setDividerHeight(dp(5));
         TextView empty = text("正在读取目录…", 13, MUTED);
@@ -2360,8 +2395,8 @@ final class WorkspaceUi extends ContextThemeWrapper {
             java.nio.file.Path owner = fs.sessionOwner(dir.toPath());
             if (owner != null) {
                 hint.setText("会话内部 · 仅浏览/复制");
-                tool(location, "select", "会话概览 / 分析 / 导出",
-                    () -> sessionOverview(owner.toFile()));
+                ToolIcon menu = tool(location, "more", "会话操作", () -> {});
+                menu.setOnClickListener(v -> sessionActions(owner.toFile(), v));
             }
         } catch (Exception e) {
             empty.setText(e.getMessage());
@@ -2463,7 +2498,7 @@ final class WorkspaceUi extends ContextThemeWrapper {
                             toggleFile(entries.get(n).file);
                             showTab(2);
                         } else
-                            fileMenu(entries.get(n));
+                            fileMenu(entries.get(n), v, press[0], press[1]);
                         return true;
                     });
                 });
@@ -2579,27 +2614,42 @@ final class WorkspaceUi extends ContextThemeWrapper {
             .setNegativeButton("取消", null)
             .show();
     }
-    private void fileMenu(WorkspaceFiles.Item e) {
-        List<String> names = new ArrayList<>();
-        List<Runnable> run = new ArrayList<>();
+    private static final class FileAction {
+        final String label, icon;
+        final int group;
+        final Runnable run;
+        FileAction(String label, String icon, int group, Runnable run) {
+            this.label = label;
+            this.icon = icon;
+            this.group = group;
+            this.run = run;
+        }
+    }
+    private void openSessionRecords(File file) {
+        selectedSession = file;
+        historyManaging = false;
+        historySelection.clear();
+        showTab(1);
+    }
+    private void sessionActions(File file, View anchor) {
+        List<FileAction> actions = new ArrayList<>();
+        actions.add(new FileAction("打开记录", "records", 0, () -> openSessionRecords(file)));
+        actions.add(new FileAction("导出", "export", 1, () -> exportDialog(file)));
+        actions.add(new FileAction("查看报告", "report", 1, () -> reportDialog(file)));
+        actions.add(new FileAction("会话概览", "overview", 1, () -> sessionOverview(file)));
+        showFileMenu(file.getName(), anchor, Float.NaN, Float.NaN, actions);
+    }
+    private void fileMenu(WorkspaceFiles.Item e, View anchor, float pressX, float pressY) {
         if (e.link) {
             toast("不操作符号链接");
             return;
         }
-        names.add("打开");
-        run.add(() -> {
-            if (e.directory)
-                enterDirectory(e.file);
-            else
-                openFile(e);
-        });
-        if (e.session) {
-            names.add("会话概览 / 分析 / 导出");
-            run.add(() -> sessionOverview(e.file));
-        } else if (!e.directory && e.file.getName().toLowerCase(Locale.ROOT).endsWith(".pcap")) {
-            names.add("导入分析（生成独立会话）");
-            run.add(() -> importFile(e.file));
-        }
+        List<FileAction> actions = new ArrayList<>();
+        if (e.session)
+            actions.add(new FileAction("打开记录", "records", 0,
+                () -> openSessionRecords(e.file)));
+        else if (!e.directory)
+            actions.add(new FileAction("打开", "file", 0, () -> openFile(e)));
         boolean edit = true, copy = true;
         try {
             browser().guard(e.file, activeFile(), false);
@@ -2611,33 +2661,141 @@ final class WorkspaceUi extends ContextThemeWrapper {
         } catch (Exception ex) {
             copy = false;
         }
-        if (copy) {
-            names.add("复制");
-            run.add(() -> clipboard(Collections.singletonList(e.file), false));
-        }
+        if (copy)
+            actions.add(new FileAction("复制", "copy", 1,
+                () -> clipboard(Collections.singletonList(e.file), false)));
         if (edit) {
-            names.add("剪切");
-            run.add(() -> clipboard(Collections.singletonList(e.file), true));
-            names.add("移动到文件夹");
-            run.add(() -> collectionDialog(Collections.singletonList(e.file)));
-            names.add("重命名");
-            run.add(() -> renameFile(e.file));
-            names.add("删除");
-            run.add(() -> confirmDelete(Collections.singletonList(e.file), null));
+            actions.add(new FileAction("剪切", "cut", 1,
+                () -> clipboard(Collections.singletonList(e.file), true)));
+            actions.add(new FileAction("移动到文件夹", "move", 1,
+                () -> collectionDialog(Collections.singletonList(e.file))));
+            actions.add(new FileAction("重命名", "rename", 1, () -> renameFile(e.file)));
         }
-        names.add("多选");
-        run.add(() -> {
+        if (e.session) {
+            actions.add(new FileAction("导出", "export", 2, () -> exportDialog(e.file)));
+            actions.add(new FileAction("查看报告", "report", 2, () -> reportDialog(e.file)));
+            actions.add(new FileAction("会话概览", "overview", 2, () -> sessionOverview(e.file)));
+        } else if (!e.directory && e.file.getName().toLowerCase(Locale.ROOT).endsWith(".pcap"))
+            actions.add(new FileAction("导入分析", "import", 2, () -> importFile(e.file)));
+        actions.add(new FileAction("多选", "select", 3, () -> {
             historyManaging = true;
             historySelection.add(e.file);
             showTab(2);
-        });
-        names.add("属性");
-        run.add(() -> fileProperties(e));
-        alert()
-            .setTitle(e.file.getName())
-            .setItems(names.toArray(new String[0]), (d, n) -> run.get(n).run())
-            .setNegativeButton("取消", null)
-            .show();
+        }));
+        actions.add(new FileAction("属性", "info", 3, () -> fileProperties(e)));
+        if (edit)
+            actions.add(new FileAction("删除", "trash", 4,
+                () -> confirmDelete(Collections.singletonList(e.file), null)));
+        showFileMenu(e.file.getName(), anchor, pressX, pressY, actions);
+    }
+    private void dismissFileMenu() {
+        if (fileActionMenu != null) {
+            Dialog d = fileActionMenu.dialog;
+            restoreFileMenu(d);
+            d.dismiss();
+        }
+    }
+    private void restoreFileMenu(Dialog d) {
+        if (fileActionMenu != null && fileActionMenu.dialog == d) {
+            fileActionMenu.target.setBackground(fileActionMenu.originalBackground);
+            fileActionMenu = null;
+        }
+    }
+    private void showFileMenu(String name, View anchor, float pressX, float pressY,
+        List<FileAction> actions) {
+        dismissFileMenu();
+        int[] position = new int[2];
+        anchor.getLocationOnScreen(position);
+        int x = Float.isNaN(pressX) ? position[0] + anchor.getWidth() / 2 : Math.round(pressX);
+        int y = Float.isNaN(pressY) ? position[1] + anchor.getHeight() / 2 : Math.round(pressY);
+        LinearLayout box = col();
+        box.setPadding(dp(6), dp(6), dp(6), dp(6));
+        TextView caption = text(name, 11, MUTED);
+        caption.setSingleLine();
+        caption.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        caption.setPadding(dp(10), dp(7), dp(10), dp(7));
+        box.addView(caption);
+        Dialog d = track(new Dialog(this));
+        d.setCanceledOnTouchOutside(true);
+        int lastGroup = -1;
+        for (FileAction action : actions) {
+            if (lastGroup != -1 && lastGroup != action.group) {
+                View divider = new View(this);
+                divider.setBackgroundColor(EDGE);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(1));
+                lp.setMargins(dp(10), dp(4), dp(10), dp(4));
+                box.addView(divider, lp);
+            }
+            lastGroup = action.group;
+            boolean danger = action.icon.equals("trash");
+            LinearLayout item = row();
+            item.setPadding(dp(8), dp(5), dp(10), dp(5));
+            item.setMinimumHeight(dp(44));
+            item.setBackground(new RippleDrawable(android.content.res.ColorStateList.valueOf(
+                ThemePalette.mix(palette.modal, danger ? RED : ACCENT, .20)),
+                new ColorDrawable(android.graphics.Color.TRANSPARENT), background(TEXT, 9)));
+            ToolIcon icon = new ToolIcon(this, action.icon, action.label, () -> {});
+            icon.setClickable(false);
+            icon.setFocusable(false);
+            icon.setLongClickable(false);
+            icon.setTooltipText(null);
+            icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            if (danger)
+                icon.setTint(RED);
+            item.addView(icon, new LinearLayout.LayoutParams(dp(26), dp(26)));
+            TextView label = text(action.label, 13, danger ? RED : TEXT);
+            label.setPadding(dp(9), 0, 0, 0);
+            item.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
+            item.setFocusable(true);
+            item.setContentDescription(action.label);
+            item.setOnClickListener(v -> {
+                dismissFileMenu();
+                action.run.run();
+            });
+            box.addView(item, new LinearLayout.LayoutParams(-1, -2));
+        }
+        // 内容过高时滚动，窗口尺寸只由紧凑菜单的实测内容与安全区决定。
+        ScrollView sc = scroll();
+        sc.setFillViewport(false);
+        sc.setVerticalScrollBarEnabled(true);
+        sc.setScrollbarFadingEnabled(false);
+        sc.addView(box);
+        d.setContentView(sc);
+        fileActionMenu = new FileActionMenu(d, anchor, sc, x, y);
+        GradientDrawable highlight = background(palette.active, 12);
+        highlight.setStroke(dp(2), ACCENT);
+        anchor.setBackground(highlight);
+        Window w = d.getWindow();
+        w.setBackgroundDrawable(background(palette.modal, 16));
+        w.setElevation(dp(16));
+        w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+        w.setDimAmount(0);
+        // 外部触摸只关闭菜单，不透传为后面文件的打开操作。
+        w.clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL);
+        d.show();
+        fitDialog(d);
+    }
+    private void fitFileMenu(FileActionMenu menu, android.graphics.Rect bounds,
+        android.graphics.Insets safe, int ime) {
+        ModalGeometry limit = ModalGeometry.fit(bounds.width(), bounds.height(), safe.left,
+            safe.top, safe.right, safe.bottom, ime, dp(8), dp(224), dp(480));
+        menu.content.measure(View.MeasureSpec.makeMeasureSpec(limit.width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(limit.height, View.MeasureSpec.AT_MOST));
+        ContextMenuGeometry frame = ContextMenuGeometry.fit(bounds.width(), bounds.height(),
+            safe.left, safe.top, safe.right, Math.max(safe.bottom, ime), dp(8), dp(10),
+            menu.x - bounds.left, menu.y - bounds.top, limit.width,
+            menu.content.getMeasuredHeight());
+        Window w = menu.dialog.getWindow();
+        WindowManager.LayoutParams lp = w.getAttributes();
+        if (lp.width != frame.width || lp.height != frame.height || lp.x != frame.x
+            || lp.y != frame.y) {
+            lp.width = frame.width;
+            lp.height = frame.height;
+            lp.x = frame.x;
+            lp.y = frame.y;
+            lp.gravity = Gravity.TOP | Gravity.LEFT;
+            w.setAttributes(lp);
+        }
     }
     private ImageView fileIcon(String name) {
         ImageView icon = new ImageView(this);
@@ -3050,24 +3208,6 @@ final class WorkspaceUi extends ContextThemeWrapper {
             enterDirectory(file);
         });
         tool(head, "close", "关闭概览", () -> d.dismiss());
-        LinearLayout manage = row();
-        action(manage, "名称与备注", false, () -> editSession(file, d));
-        action(manage, "移动到文件夹", false,
-            () -> collectionDialog(Collections.singletonList(file), d));
-        action(manage, "删除", false, () -> confirmDelete(Collections.singletonList(file), d));
-        ((Button) manage.getChildAt(2)).setTextColor(RED);
-        box.addView(manage);
-        LinearLayout footer = row();
-        action(footer, "查看报告", false, () -> reportDialog(file));
-        action(footer, "导出", false, () -> exportDialog(file));
-        action(footer, "打开记录", true, () -> {
-            selectedSession = file;
-            historyManaging = false;
-            historySelection.clear();
-            d.dismiss();
-            showTab(1);
-        });
-        box.addView(footer);
         sizeEditor(d, 440);
         io.execute(() -> {
             try {
@@ -3116,46 +3256,6 @@ final class WorkspaceUi extends ContextThemeWrapper {
                 post(() -> loading.setText("读取失败：" + e.getMessage()));
             }
         });
-    }
-    private void editSession(File file, Dialog overview) {
-        JSONObject meta = PacketStore.manifest(file);
-        LinearLayout box = col();
-        box.setPadding(dp(14), dp(4), dp(14), dp(8));
-        LinearLayout head = modalHead(box, "名称与备注");
-        LinearLayout content = modalBody(box);
-        EditText title = input("会话名称"), note = input("备注（可选）");
-        title.setText(meta.optString("title", meta.optString("label", file.getName())));
-        note.setText(meta.optString("description"));
-        note.setSingleLine(false);
-        note.setMinLines(2);
-        content.addView(title);
-        gap(content, 8);
-        content.addView(note);
-        Dialog d = dialog("", box);
-        tool(head, "close", "关闭", () -> d.dismiss());
-        LinearLayout footer = row();
-        action(footer, "取消", false, () -> d.dismiss());
-        action(footer, "保存", true, () -> {
-            String name = title.getText().toString().trim(),
-                   description = note.getText().toString();
-            io.execute(() -> {
-                try {
-                    SessionLibrary.annotate(file, libraryRoots(),
-                        CaptureService.active ? CaptureService.activeSession : null, name,
-                        description, null);
-                    post(() -> {
-                        d.dismiss();
-                        overview.dismiss();
-                        if (tab == 2)
-                            showTab(2);
-                    });
-                } catch (Exception e) {
-                    post(() -> title.setError(e.getMessage()));
-                }
-            });
-        });
-        box.addView(footer);
-        sizeEditor(d, 270);
     }
     private void collectionDialog(List<File> files) {
         collectionDialog(files, null);
