@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$SdkPath = $env:ANDROID_SDK_ROOT,
     [string]$JdkPath = '',
     [switch]$SkipX86
