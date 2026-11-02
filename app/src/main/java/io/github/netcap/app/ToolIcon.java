@@ -180,6 +180,15 @@ final class ToolIcon extends View {
                 p.setStyle(Paint.Style.FILL);
                 for (int y = 5; y < 22; y += 7) c.drawCircle(12, y, 1.5f, p);
                 break;
+            case "settings":
+                c.drawCircle(12, 12, 3.1f, p);
+                c.drawCircle(12, 12, 7.1f, p);
+                for (int i = 0; i < 8; i++) {
+                    double angle = Math.PI * i / 4;
+                    c.drawLine(12 + (float) Math.cos(angle) * 8.6f, 12 + (float) Math.sin(angle) * 8.6f,
+                        12 + (float) Math.cos(angle) * 10.4f, 12 + (float) Math.sin(angle) * 10.4f, p);
+                }
+                break;
             case "close":
                 c.drawLine(6, 6, 18, 18, p);
                 c.drawLine(6, 18, 18, 6, p);
