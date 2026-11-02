@@ -65,6 +65,16 @@ public final class McpChecks {
         for (String value : invalids) try { tools.call("netcap_get_session", args(value)); require(false, "reject invalid id"); } catch (IOException expected) { checks++; }
         JSONObject[] badArgs = {args(id).put("row", -1), args(id).put("row", 99999), args(id).put("row", "1"), args(id).put("row", 1.5), args(id).put("row", 0).put("maxBytes", 20000), args(id).put("row", 0).put("arbitraryPath", root.getPath())};
         for (JSONObject a : badArgs) try { tools.call("netcap_get_packet", a); require(false, "reject invalid packet argument"); } catch (IOException expected) { checks++; }
+        try (McpServer open = new McpServer(0, false, null, tools, message -> {})) {
+            open.start();
+            int port = open.port();
+            Response init = http(port, "POST", "/mcp", null, "", request("initialize", new JSONObject().put("protocolVersion", "2025-11-25")).toString());
+            require(init.status == 200 && init.body.getJSONObject("result").getString("protocolVersion").equals("2025-11-25"), "no-token initialize");
+            Response listed = http(port, "POST", "/mcp", "ignored", "", request("tools/list", new JSONObject()).toString());
+            require(listed.status == 200 && listed.body.getJSONObject("result").getJSONArray("tools").length() == 6, "no-token tools/list");
+            require(http(port, "POST", "/mcp", null, "Origin: https://evil.test\r\n", "{}").status == 403, "no-token origin validation");
+            open.close();
+        }
         try (McpServer server = new McpServer(0, false, TOKEN, tools, message -> {})) {
             server.start(); int port = server.port();
             for (String version : McpServer.VERSIONS) {

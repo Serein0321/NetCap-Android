@@ -51,6 +51,7 @@ try {
     Invoke-Checked "$JdkPath\bin\java.exe" @('-cp',"$buildTools\lib\d8.jar",'com.android.tools.r8.D8','--min-api','33','--lib',"$SdkPath\platforms\android-36\android.jar",'--output','build/dex','build/classes.jar')
     Copy-Item -LiteralPath 'build/resources.apk' -Destination 'build/unsigned.apk' -Force
     Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
     $apk = [IO.Compression.ZipFile]::Open((Join-Path $outDir 'unsigned.apk'),[IO.Compression.ZipArchiveMode]::Update)
     try {
         [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($apk,(Join-Path $outDir 'dex/classes.dex'),'classes.dex') | Out-Null

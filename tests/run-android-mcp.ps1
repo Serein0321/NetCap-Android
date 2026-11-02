@@ -1,4 +1,4 @@
-param([string]$Serial='emulator-5582',[string]$SdkPath='D:\Android\SDK',[string]$JdkPath='D:\Android\Android studio\jbr',[switch]$SdkCheck)
+﻿param([string]$Serial='emulator-5582',[string]$SdkPath='D:\Android\SDK',[string]$JdkPath='D:\Android\Android studio\jbr',[switch]$SdkCheck)
 $ErrorActionPreference='Stop'
 $project=Split-Path $PSScriptRoot -Parent
 $out=Join-Path $project 'build\android-mcp-tests'
@@ -13,6 +13,7 @@ Run "$JdkPath\bin\jar.exe" @('cf',"$out\tests.jar",'-C',"$out\classes",'.')
 Run "$JdkPath\bin\java.exe" @('-cp',"$bt\lib\d8.jar",'com.android.tools.r8.D8','--min-api','33','--lib',$platform,'--classpath',"$project\build\classes.jar",'--output',"$out\dex","$out\tests.jar")
 Copy-Item -LiteralPath "$out\resources.apk" -Destination "$out\unsigned.apk" -Force
 Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip=[IO.Compression.ZipFile]::Open("$out\unsigned.apk",[IO.Compression.ZipArchiveMode]::Update)
 try{[IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip,"$out\dex\classes.dex",'classes.dex')|Out-Null}finally{$zip.Dispose()}
 Run "$bt\zipalign.exe" @('-f','4',"$out\unsigned.apk","$out\aligned.apk")

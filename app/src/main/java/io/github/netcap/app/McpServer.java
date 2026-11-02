@@ -25,7 +25,7 @@ final class McpServer implements AutoCloseable {
     volatile String lastTool = "";
 
     McpServer(int port, boolean lan, String token, McpTools tools, java.util.function.Consumer<String> failure) throws IOException {
-        if (token == null || !token.matches("[a-f0-9]{48}")) throw new IOException("访问令牌无效");
+        if (token != null && !token.matches("[a-f0-9]{48}")) throw new IOException("访问令牌无效");
         this.token = token;
         this.tools = tools;
         this.failure = failure;
@@ -76,7 +76,9 @@ final class McpServer implements AutoCloseable {
                 }
                 // Disallow browser origins entirely. Native MCP clients do not need CORS.
                 if (headers.containsKey("origin")) throw new HttpError(403, "Browser origins are not allowed");
-                if (!MessageDigest.isEqual(("Bearer " + token).getBytes(StandardCharsets.UTF_8), headers.getOrDefault("authorization", "").getBytes(StandardCharsets.UTF_8))) throw new HttpError(401, "Bearer token required");
+                // Token is optional. When the owner has not enabled it, the server stays open on the local network.
+                if (token != null && !MessageDigest.isEqual(("Bearer " + token).getBytes(StandardCharsets.UTF_8),
+                        headers.getOrDefault("authorization", "").getBytes(StandardCharsets.UTF_8))) throw new HttpError(401, "Bearer token required");
                 if (!request[1].equals("/mcp")) throw new HttpError(404, "Use /mcp");
                 if (!request[0].equals("POST")) throw new HttpError(405, "Use POST; standalone SSE is not supported");
                 String version = headers.get("mcp-protocol-version");

@@ -1,10 +1,11 @@
-# 调研记录
+# 发现
 
-- MainActivity 是原生 Java Activity，目前只有工具启动入口；无 Gradle，使用 build.ps1 / Android SDK 36 手工打包。
-- 既有主题由 ThemeUi / ThemePalette 统一管理，首页应复用语义色。
-- 当前 Manifest 没有 INTERNET 权限，新增服务需补充。
-- 服务设计采用 /mcp Streamable HTTP JSON 响应，兼容 2025-03-26、2025-06-18、2025-11-25 initialize 协议。
-- 协议资料：https://modelcontextprotocol.io/specification/2025-11-25/basic/transports 与 /server/tools。当前官方搜索结果还包含 2026-07-28 新版本，交付需明确本次支持版本。
-- 数据工具复用真实 PCAP/64 字节索引；只接受会话列表返回的散列 ID，拒绝任意路径，单次查询最多扫描 4096 行，最多返回 128 包。
-- 模拟器首次截图显示两类地址与复制入口可见；已修正有效端口恢复后错误图标残留。Android 测试使用独立 AVD，未安装或改动已连接的真实手机。
-- 官方 Python SDK 1.27.1 可用；本机 httpx 受环境代理影响，回环测试必须 trust_env=False，避免请求错误走代理。
+- 基线分支 `feature/2`（ce2d350）本身没有 MCP；远端 `feature/mainactivity-mcp` 有可用的后端和一套过密的首页。本轮只搬后端与设置能力，避免回退 0.4.4 的存储修复。
+- 用户要的不是“更漂亮的 MCP 控制台”，而是把日常路径压成一个动作：`开启 MCP` → 看到两个地址 → 复制。因此首页不出现端口输入框，默认 2845 只在地址中自然带出；端口只在设置里出现。
+- 令牌默认关闭会让同网设备直接读取，这是用户明确要求；首页用一行短警告说明风险，设置一键可达。局域网默认开启，关闭后只绑定 127.0.0.1。
+- 设置页用独立 Activity 而不是对话框：横屏、320dp、大字体和软键盘下更容易保证滚动与输入框可见；运行中整个配置锁定，避免“看起来改了但没生效”。
+- 地址来源是实际网卡 IPv4（wlan/wifi/eth/ap/swlan/rndis/bnep），不是猜测；无地址时明确提示，不展示 `0.0.0.0` 或占位地址。
+- MCP 与悬浮工具保持独立：开启 MCP 不需要悬浮窗或 Root；退出悬浮工具不影响 MCP。首页两个动作互不依赖。
+- instrumentation 里不能用 `startActivitySync` 把已存在的 singleTop 首页从后台带回；它等不到新的 Activity 记录。改为 `startActivity` 后等待 `onResume`，测试不再挂起。
+- 模拟器验证用独立端口（首轮 2845，后续 18766/18765）避免与主机/其他测试冲突；最终官方 SDK 检查固定 18765，默认 2845 已在首轮真实绑定。
+- 本工作区没有旧开发签名密钥，`build/signing/development.jks` 是新生成的；证书与 0.4.x 不同。测试包可覆盖安装当前模拟器，但覆盖 0.4.x 旧包需先卸载。

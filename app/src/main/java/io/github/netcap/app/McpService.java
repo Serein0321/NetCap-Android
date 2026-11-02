@@ -15,7 +15,7 @@ public final class McpService extends Service {
     private static final int NOTIFICATION = 42;
     static volatile String state = "stopped", error = "";
     static volatile int boundPort;
-    static volatile boolean boundLan;
+    static volatile boolean boundLan, boundAuth;
     static volatile long started;
     private static volatile McpServer running;
     private final ExecutorService lifecycle = Executors.newSingleThreadExecutor();
@@ -32,18 +32,19 @@ public final class McpService extends Service {
         if (STOP.equals(intent.getAction())) { shutdown(); return START_NOT_STICKY; }
         if (!START.equals(intent.getAction()) || isRunning() || busy()) return START_NOT_STICKY;
         state = "starting"; error = "";
-        boundPort = McpSettings.port(this); boundLan = McpSettings.lan(this);
+        boundPort = McpSettings.port(this); boundLan = McpSettings.lan(this); boundAuth = McpSettings.auth(this);
         try {
             NotificationManager manager = getSystemService(NotificationManager.class);
             manager.createNotificationChannel(new NotificationChannel("mcp", "MCP 连接服务", NotificationManager.IMPORTANCE_LOW));
             PendingIntent open = PendingIntent.getActivity(this, 41, new Intent(this, MainActivity.class), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             PendingIntent stop = PendingIntent.getService(this, 42, new Intent(this, McpService.class).setAction(STOP), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             Notification notification = new Notification.Builder(this, "mcp").setSmallIcon(R.drawable.ic_launcher)
-                .setContentTitle("NetCap · MCP 服务").setContentText("只读访问 · 端口 " + boundPort + (boundLan ? " · 局域网" : " · 仅本机"))
+                .setContentTitle("NetCap · MCP 服务").setContentText("只读访问 · " + boundPort + (boundLan ? " · 局域网" : " · 仅本机") + (boundAuth ? " · 需令牌" : ""))
                 .setContentIntent(open).setOngoing(true).addAction(new Notification.Action.Builder(null, "停止 MCP", stop).build()).build();
             startForeground(NOTIFICATION, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         } catch (Exception e) { fail("无法启动后台服务，请回到首页重试"); return START_NOT_STICKY; }
-        final int port = boundPort; final boolean lan = boundLan; final String token = McpSettings.token(this);
+        final int port = boundPort; final boolean lan = boundLan;
+        final String token = boundAuth ? McpSettings.token(this) : null;
         lifecycle.execute(() -> {
             try {
                 McpTools tools = new McpTools(new McpTools.Source() {
@@ -60,6 +61,7 @@ public final class McpService extends Service {
                     public JSONObject status() throws Exception {
                         return new JSONObject().put("captureRunning", CaptureService.active).put("captureStopping", CaptureService.stopping)
                             .put("capture", CaptureService.snapshot()).put("mcpPort", boundPort).put("lanEnabled", boundLan)
+                            .put("tokenRequired", boundAuth)
                             .put("toolCalls", calls()).put("readOnly", true);
                     }
                 });
@@ -72,7 +74,9 @@ public final class McpService extends Service {
                     started = System.currentTimeMillis(); state = "running";
                 });
             } catch (Exception e) {
-                String message = e instanceof java.net.BindException ? "端口 " + port + " 已被占用，请更换端口后重试" : "监听失败，请检查端口和网络设置后重试";
+                String message = e instanceof java.net.BindException
+                    ? "端口 " + port + " 已被占用，请在 MCP 设置中更换端口"
+                    : "监听失败，请检查网络设置或在 MCP 设置中更换端口";
                 main.post(() -> { if (!destroyed && state.equals("starting")) fail(message); });
             }
         });

@@ -4,9 +4,9 @@
 
 NetCap 面向 Android 应用与游戏的通信调试，将流量采集、原始记录保存、手机内查看和文件导出整合到一个 APK 中。启动后通过悬浮球展开半透明工作台，在当前应用上方完成进程选择、开始/停止抓包、查看记录与导出，无需来回切换普通应用页面。
 
-采集与手机内分析在本机完成，不依赖 AI 服务。你可以观察包的方向、大小、时间、通信端点和载荷，也可以导出 PCAP，在电脑上的网络分析工具中继续研究。首页 MCP 为可选服务，开启后持有令牌的客户端可以读取会话与数据包。
+抓包数据保存在本机。你可以在手机上观察包的方向、大小、时间、通信端点和载荷，也可以导出 PCAP，在电脑上的网络分析工具中继续研究；需要时还能通过只读 MCP 把已有会话提供给本机或同一网络的 AI 客户端。
 
-> **项目状态：开发测试版。** 当前版本为 `0.5.0-mcp-test`，新增首页 MCP 连接中心、独立后台服务和六项只读分析工具，保留文件工作区、TLS观察、12主题与采集胶囊。接入方式及本轮验证见 [MCP 说明](MCP.md)。真实 Root 抓包、物理局域网覆盖及长时间后台稳定性仍需设备验证。既有功能验证见 [验证记录](VERIFICATION.md)。
+> **项目状态：开发测试版。** 当前版本为 `0.5.0-mcp-test`，适合源码审阅与设备测试。首页已收敛为“悬浮工作台 + MCP 连接”两块：MCP 默认监听 2845、允许局域网、不启用访问令牌；开启后直接显示本机与局域网地址，端口/局域网/令牌收进独立设置页。保留文件工作区、目录操作、TLS 观察、12 主题与采集胶囊；构建与离线检查见下文。真实网络覆盖、应用归属、后台长期运行及最新界面效果仍需设备验证。详细证据见 [验证记录](VERIFICATION.md)。MCP 接入见 [MCP.md](MCP.md)。
 
 ## 功能概览
 
@@ -24,12 +24,13 @@ NetCap 面向 Android 应用与游戏的通信调试，将流量采集、原始�
 | 研究模式 | 无法归属的包可独立保留，记录匹配依据、等待时长与失败原因，不冒称目标应用流量 |
 | 完整性证据 | 停止后自动检查文件/索引、TCP 区间、标准 KCP 候选序号和 IP 分片，记录网络与接口变化 |
 | 文件工作区 | 实际目录单击进入、长按管理、多级文件夹与复制/移动/改名/删除；PCAP分析、文本/原始字节及ZIP内容浏览 |
+| 历史长按菜单 | 历史文件/文件夹长按在按压点附近显示紧凑菜单，自动避让系统栏、挖孔与键盘；按原保护规则提供打开、复制、移动、重命名、导出、属性、多选和删除 |
 | 多格式导出 | 完整会话 ZIP、合并 PCAP、JSONL、完整十六进制文本 |
 | 运行统计 | 抓包计时、包/流量速率、收发、未知保留/排除、过滤、内核/队列丢弃、截断及解析失败 |
 | TLS 连接观察 | 有界 TCP 前缀重组、可见握手/SNI/ALPN/版本/证书及分析边界；不解密 HTTPS 正文 |
 | 全局配色 | 12套完整深色主题，卡片网格与预览；统一应用并持久保留 |
 | 设备诊断 | 导出设备及会话诊断，便于复现兼容性问题 |
-| MCP 连接中心 | 首页配置端口、启停、局域网开关、本机/局域网地址复制、访问令牌和通用客户端配置；六项只读工具 |
+| MCP 只读接入 | 首页一键开启；默认 2845 端口、局域网可访问、无令牌；显示本机与局域网地址，端口/局域网/令牌在独立设置页；六个只读工具 |
 
 ## 环境要求
 
@@ -45,7 +46,7 @@ NetCap 面向 Android 应用与游戏的通信调试，将流量采集、原始�
 
 从仓库的 **Releases** 下载测试 APK，安装后打开 NetCap 的启动页并点击“启动”。按系统提示允许显示在其他应用上层，回到桌面或目标应用后点击悬浮球。
 
-当前安装文件为 `NetCap-0.5.0-mcp-test.apk`。MCP 可在首页独立开启，无需先启动悬浮工具；详见 [接入说明](MCP.md)。
+当前安装文件为 `NetCap-0.5.0-mcp-test.apk`。
 
 “启动”只启动工具服务，**不会自动开始抓包**。
 
@@ -76,6 +77,10 @@ NetCap 面向 Android 应用与游戏的通信调试，将流量采集、原始�
 导入与导出使用工作台内的路径选择器。默认保存和导出目录位于应用自己的外部文件目录，无需额外文件访问权限。选择内部存储根目录（`/storage/emulated/0`）或其他共享目录时，会按需引导开启“允许管理所有文件”；从系统授权页面返回后，恢复原选择并继续操作。取消授权仍可使用默认目录。其他应用的 `Android/data` 等受保护目录仍可能不可访问。
 
 选择保存目录时会实际创建并清理一个探测文件，避免仅凭目录可浏览或 `canWrite()` 就误判可写。导出会先写入 `.partial` 临时文件，完成同步后再命名为目标文件；遇到同名文件会拒绝覆盖。失败时只有真正写入了数据才报告保留的临时文件路径，并区分完整文件和可能不完整的数据；未创建文件时不会再提示“临时文件已保留”。
+
+### 5. 让 AI 读取会话（可选）
+
+在首页“MCP 连接”点击“开启 MCP”，页面会直接出现本机地址和局域网地址，点击整行复制。把地址填入支持 Streamable HTTP 的 MCP 客户端即可查询已有会话；默认不需要令牌，适合可信局域网。端口、局域网开关和访问令牌都在 MCP 区域的齿轮设置中，运行中锁定。完整说明见 [MCP.md](MCP.md)。
 
 ## 悬浮操作
 
@@ -223,12 +228,18 @@ build/outputs/NetCap-0.5.0-mcp-test.apk
 app/src/main/
 ├── AndroidManifest.xml
 ├── java/io/github/netcap/app/
-│   ├── MainActivity.java      首页、MCP 连接中心与系统权限入口
-│   ├── McpService.java        独立 MCP 前台服务与通知停止入口
-│   ├── McpServer.java         鉴权、Streamable HTTP 与 JSON-RPC
-│   ├── McpTools.java          有界、只读的会话与数据包分析工具
-│   ├── McpSettings.java       配置、访问令牌与局域网地址
+│   ├── MainActivity.java      简化首页：工作台入口与 MCP 连接
+│   ├── McpSettingsActivity.java  MCP 端口、局域网与令牌设置
+│   ├── HomeStyle.java         首页与设置页共用的视觉语言
+│   ├── Ids.java               稳定的控件 ID
+│   ├── McpService.java        MCP 前台服务与生命周期
+│   ├── McpServer.java         无会话 Streamable HTTP 服务
+│   ├── McpTools.java          六个只读工具与会话发现
+│   ├── McpSettings.java       MCP 偏好、令牌与地址枚举
 │   ├── WorkspaceUi.java       悬浮工作台、弹窗和业务界面
+│   ├── ContextMenuGeometry.java 历史长按菜单的安全区域定位
+│   ├── ExportFiles.java       共享目录导出与失败恢复
+│   ├── StorageAccessActivity.java 共享存储授权承接页
 │   ├── CaptureService.java    Root 核心、通知与会话生命周期
 │   ├── PacketStore.java       索引、解析、导入、比较与导出
 │   ├── PacketFilter.java      视图筛选与载荷匹配
@@ -251,9 +262,14 @@ licenses/                     附带依赖许可说明
 
 ## 测试与反馈
 
-本轮主机数据回归通过 5289 项断言，会话管理/几何 1650 项、TLS/主题 1579 项、画廊/悬浮球 8043 项、文件工作区 1057 项、ZIP 35 项，并新增 MCP 协议与数据工具回归。主机无符号链接创建权限，相关创建用例跳过；本轮未启用真实 TLS fixture 扩展。MCP Android 模拟器及官方客户端的独立验证记录见 [MCP.md](MCP.md)，这些结果不能替代真实手机 Root 收包、物理网络切换和长期运行验收。
+本版主机回归共 17,731 项断言：5289 数据、1650 会话/几何、1579 TLS/主题、8043 画库/悬浮球、1057 文件工作区、35 归档、18 导出文件与 60 MCP；Windows 无符号链接创建权限，相关运行检查跳过。Android API36.1 模拟器通过 90 项首页/MCP 检查，覆盖默认 2845、局域网与令牌开关、地址复制、端口占用、横竖屏、后台、320dp 大字体和键盘避让；官方 Python MCP SDK 完成 initialize、六工具与真实 fixture 检查。截图在 `build/android-mcp-tests/mcp-checks/`。这些结果仍不能替代实体手机 Wi‑Fi/热点跨设备、Root 收包并发、厂商后台限制和第三方客户端验收。
 
-0.3.1 新操作与边界说明见 [LIBRARY.md](LIBRARY.md)。版本对应的验证范围见 [VERIFICATION.md](VERIFICATION.md)，最新弹窗改动见 [DIALOGS.md](DIALOGS.md)，界面精修见 [REFINEMENT.md](REFINEMENT.md)。
+```powershell
+.\tests\run-checks.ps1 -SdkPath 'D:\Android\SDK' -JdkPath 'D:\Android\Android studio\jbr'
+.\tests\run-android-mcp.ps1 -Serial emulator-5582 -SdkCheck
+```
+
+0.3.1 新操作与边界说明见 [LIBRARY.md](LIBRARY.md)。版本对应的验证范围见 [VERIFICATION.md](VERIFICATION.md)，MCP 接入见 [MCP.md](MCP.md)，最新弹窗改动见 [DIALOGS.md](DIALOGS.md)，界面精修见 [REFINEMENT.md](REFINEMENT.md)。
 
 欢迎通过仓库 Issues 报告问题。反馈请包含：
 

@@ -1,4 +1,4 @@
-﻿param([string]$SdkPath='D:\Android\SDK',[string]$JdkPath='D:\Android\Android studio\jbr',[switch]$Traffic,[switch]$TlsFixtures)
+param([string]$SdkPath='D:\Android\SDK',[string]$JdkPath='D:\Android\Android studio\jbr',[switch]$Traffic,[switch]$TlsFixtures)
 $ErrorActionPreference='Stop'
 $project=Split-Path $PSScriptRoot -Parent
 $destination=Join-Path $project 'build\host-tests'

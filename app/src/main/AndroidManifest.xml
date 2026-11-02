@@ -15,11 +15,12 @@
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
         </activity>
         <activity android:name=".StorageAccessActivity" android:exported="false" android:excludeFromRecents="true" />
+        <activity android:name=".McpSettingsActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <service android:name=".CaptureService" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-initiated local Root packet capture with visible status and stop controls" />
         </service>
         <service android:name=".McpService" android:exported="false" android:foregroundServiceType="specialUse">
-            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-enabled authenticated local MCP server for read-only capture analysis, with visible status and stop action" />
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-enabled local MCP server for read-only capture analysis, with visible status and stop action" />
         </service>
     </application>
     <instrumentation android:name=".SelfTest" android:targetPackage="io.github.netcap.app" android:label="Local parser and export verification" android:functionalTest="true" />
