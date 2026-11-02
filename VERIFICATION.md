@@ -1,5 +1,18 @@
 # 验证记录
 
+## 0.6.0 三分支整合（2026-11-02）
+
+- APK：`NetCap-0.6.0-three-features-test.apk`，3,094,335 字节，versionCode=13，versionName=`0.6.0-three-features-test`，最低 API33 / 目标 API36。
+- SHA-256：`E5D2FAC1C5B99E1FE06975E96A96B73D893AE3C2D30D0182A0E15A9D0DF173F6`。
+- 分支来源：`integration/three-features` 原 `03948a6` 已通过 `0ccb88d` 包含 `feature/popup-ui` 的 `5245c6d`，并通过 `093ca7f` 包含 `feature/mainactivity-mcp`；但未包含 `feature/storage-error` 的 `c2fb99a`，且 `ContextMenuChecks` / `ContextMenuGeometry` 没有接入主机测试。本次合并 `c2fb99a` 与 `feature/2` 的 `f4cf6b6`，并把长按菜单测试接入 `run-checks.ps1`。
+- 主机回归 **49,735 项**：5289 数据 + 1650 会话/几何 + 1579 TLS/主题 + 8043 画库/悬浮球 + 1057 文件工作区 + 35 归档 + 18 导出文件 + 32,004 历史长按菜单几何 + 60 MCP。Windows 无创建符号链接权限，两项运行检查明确跳过。
+- Android API36.1 模拟器（1080×2400，x86_64）通过 **90 项** 首页/MCP 检查：默认 2845、本机/局域网地址复制、无令牌/令牌 HTTP、端口占用重试、局域网关闭、横屏、后台、840×1800 与 1.4 字号、设置页键盘避让。
+- 官方 Python MCP SDK：initialize `2025-11-25`、6 个工具、真实 Android fixture、工具错误路径全部通过。
+- 历史长按菜单和共享存储导出完成了主机逻辑回归、源码合并与编译；**未在模拟器或实体手机上实际执行长按菜单、系统“管理所有文件”授权和共享目录导出**，仍需设备验收。
+- v3 签名通过；开发证书 SHA-256 `5cb65c632b6a7b6619e4e712376f2707e7374bb844a3f6f11a0b5282f2a41181`。本工作区没有旧开发密钥，覆盖安装 0.4.x 旧测试包需先卸载；正式发行必须使用独立、受控的签名密钥。
+- 未验证：实体手机 Wi‑Fi/热点跨设备访问、Root 抓包与 MCP 并发读取、厂商后台限制、第三方 MCP 客户端兼容性、TLS/公网暴露。
+- 截图：`build/android-mcp-tests/mcp-checks/`（首页未开启/运行/令牌/仅本机/端口错误/横屏/窄屏大字体/最终，设置锁定/令牌/键盘）。
+
 ## 0.5.0 首页收敛与 MCP（2026-11-02）
 
 - APK：`NetCap-0.5.0-mcp-test.apk`，3,094,335 字节，versionCode=12，versionName=`0.5.0-mcp-test`，最低 API33 / 目标 API36。

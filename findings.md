@@ -1,5 +1,16 @@
 # 发现
 
+## 分支整合
+
+- `feature/popup-ui` 的 `5245c6d` 并不是“没合进去”：integration 的 `03948a6` 通过 `0ccb88d` 已经包含它，`git log integration..popup-ui` 为空。真正的问题是 `ContextMenuChecks`/`ContextMenuGeometry` 没有接进 `tests/run-checks.ps1`，导致那 32,004 项菜单几何断言从未在整合分支执行。
+- `feature/mainactivity-mcp` 的 `093ca7f` 也已通过 `03948a6` 进入 integration；`git log integration..mainactivity-mcp` 为空。
+- integration 的提交说明写有“修复导出异常”，但其 ancestry 中没有 `feature/storage-error` 的 `c2fb99a`；`git log integration..storage-error` 显示该提交确实缺失。合并后 `ExportFiles`、`StorageAccessActivity`、`ExportFileChecks` 才真正进入。
+- `feature/2` 的 `f4cf6b6` 基于 main（已含 storage-error），提供新的简化首页、MCP 设置页和可选令牌；整合时必须用它覆盖 integration 里旧的 MCP UI/服务实现。
+- 合并 `feature/2` 时，`WorkspaceUi` 的 popup 菜单逻辑与 storage 的导出/授权逻辑可以自动合并；`ToolIcon` 也能同时保留 popup 的 `records/overview/...` 图标和新的 `settings` 齿轮图标。
+- 版本提升到 `0.6.0-three-features-test`，避免把“三分支 + 新 MCP”的整合包与旧 0.5.0 MCP 测试包混淆。
+
+## 首页与 MCP
+
 - 基线分支 `feature/2`（ce2d350）本身没有 MCP；远端 `feature/mainactivity-mcp` 有可用的后端和一套过密的首页。本轮只搬后端与设置能力，避免回退 0.4.4 的存储修复。
 - 用户要的不是“更漂亮的 MCP 控制台”，而是把日常路径压成一个动作：`开启 MCP` → 看到两个地址 → 复制。因此首页不出现端口输入框，默认 2845 只在地址中自然带出；端口只在设置里出现。
 - 令牌默认关闭会让同网设备直接读取，这是用户明确要求；首页用一行短警告说明风险，设置一键可达。局域网默认开启，关闭后只绑定 127.0.0.1。

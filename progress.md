@@ -1,10 +1,10 @@
 # 进度
 
-- 2026-11-01：确认旧首页把 MCP 端口、令牌、局域网和客户端配置全部摊开；用户要求固定 2845、首页只留一个启动按钮，令牌/端口收进设置。
-- 已保留旧 MCP 后端（McpServer/McpService/McpTools），将 `McpSettings` 默认改为端口 2845、局域网开、令牌关；令牌改为可选，McpServer 在 token 为 null 时不校验 Authorization。
-- 已重写首页：品牌头 + 悬浮工作台 + MCP 连接；MCP 未开启只有一个按钮，开启后显示本机/局域网地址、令牌提示和停止入口；齿轮打开独立设置页。
-- 设置页包含局域网、访问令牌（显示/复制/重新生成，剪贴板敏感标记）和端口（1024–65535）；运行中锁定。
-- 主机回归 17,731 项通过（含 60 项 MCP）；官方 Python MCP SDK 与 Android instrumentation 90 项通过。
-- Android 验证覆盖默认 2845、地址复制、无令牌/有令牌 HTTP、端口占用重试、局域网关闭、横屏、后台、840×1800 + 1.4 字号、设置页键盘避让。
-- 最终 APK：build/outputs/NetCap-0.5.0-mcp-test.apk；SHA256 3240B46D700122BB1B14993A437A8EE6E3E357915C5868946164E0E281253D39。
-- 已更新 README、MCP.md、VERIFICATION.md。未连接实体手机，未验证跨设备 Wi‑Fi/热点、Root 并发读取和厂商后台策略。
+- 2026-11-02：完成 `integration/three-features` 分支审计。`feature/popup-ui`（`5245c6d`）实际已通过 `0ccb88d` 进入整合分支，`feature/mainactivity-mcp`（`093ca7f`）也已进入；真正缺失的是 `feature/storage-error`（`c2fb99a`）和 `feature/2` 的简化首页/MCP（`f4cf6b6`）。
+- 长按菜单的 `ContextMenuChecks`/`ContextMenuGeometry` 原本没有接入 `tests/run-checks.ps1`，整合时补齐；32,004 项菜单几何断言现在会随主机回归执行。
+- 已合并 `c2fb99a` 的导出/共享存储修复，再合并 `feature/2`；MCP 冲突统一采用 `feature/2` 的新实现，保留 popup-ui 的 `WorkspaceUi`、`ToolIcon` 图标和 `ContextMenuGeometry`。
+- 版本提升为 `0.6.0-three-features-test`（versionCode 13），避免与旧 0.5.0 MCP 测试包混淆。
+- 主机回归 49,735 项通过：5289 数据、1650 会话/几何、1579 TLS/主题、8043 画库/悬浮球、1057 文件工作区、35 归档、18 导出、32,004 长按菜单几何、60 MCP。
+- Android API36.1 模拟器通过 90 项首页/MCP 检查；官方 Python MCP SDK（initialize 2025-11-25、六工具、真实 fixture）通过。
+- 最终 APK：`build/outputs/NetCap-0.6.0-three-features-test.apk`；SHA-256 `E5D2FAC1C5B99E1FE06975E96A96B73D893AE3C2D30D0182A0E15A9D0DF173F6`。
+- 已更新 README、MCP.md、VERIFICATION.md。长按菜单的实际触摸、系统“管理所有文件”授权和共享目录导出仍需设备验收；未验证实体手机跨设备 Wi‑Fi/热点、Root 并发读取和厂商后台策略。

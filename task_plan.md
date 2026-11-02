@@ -1,10 +1,27 @@
-# 首页收敛与 MCP 连接
+# 分支整合与首页/MCP
 
 ## 目标
 
-把 NetCap 首页从“MCP 控制台”收敛为两块：悬浮工作台入口与 MCP 连接。MCP 固定默认端口 2845，首页不展示端口输入；局域网默认开启、令牌默认关闭，端口/局域网/令牌放进独立设置页。开启后直接展示本机与局域网地址。
+把 `feature/popup-ui`、`feature/storage-error`、`feature/mainactivity-mcp` 和 `feature/2` 收敛到 `integration/three-features`，解决冲突，重新构建验证并推送 GitHub。
 
 ## 阶段
+
+1. 抓取远端、比对四个 feature 与 integration：complete
+2. 审查 popup-ui 是否真正进入整合分支及其测试接线：complete
+3. 合并 `feature/storage-error` 的导出/共享存储修复：complete
+4. 合并 `feature/2` 的简化首页与可选 MCP：complete
+5. 版本提升到 0.6.0，补齐 ContextMenuChecks/ExportFileChecks：complete
+6. 主机回归、构建、模拟器 MCP 检查、官方 SDK：complete
+7. 推送 `integration/three-features` 到 GitHub：pending
+
+## 审计结论
+
+- `feature/popup-ui` 的 `5245c6d` 已在 `0ccb88d` 合并进 integration；`git log integration..popup-ui` 为空。
+- `feature/mainactivity-mcp` 的 `093ca7f` 也已在 `03948a6` 合并。
+- integration 的提交说明声称包含导出修复，但 ancestry 中没有 `c2fb99a`；这是实际缺口。
+- popup-ui 的 `ContextMenuChecks` 未接入 `tests/run-checks.ps1`，所以之前整合分支没有跑那 32,004 项断言。
+
+## 上一阶段：首页收敛与 MCP
 
 1. 盘点旧首页与 MCP 实现，确定默认值与保留边界：complete
 2. 重写 MainActivity 与 McpSettingsActivity，加入 HomeStyle/Ids：complete
@@ -20,3 +37,4 @@
 - 模拟器 AVD 锁文件位于工作区外，sandbox 下无法写入；本轮以显式授权运行模拟器完成验证。
 - 设置页首次请求软键盘时 `ime=0`；在测试中设置 `show_ime_with_hard_keyboard=1`、`SOFT_INPUT_STATE_ALWAYS_VISIBLE` 与 `SHOW_FORCED` 后，键盘正常显示且端口输入框在键盘上方。
 - 构建脚本在本工作区新生成开发签名密钥，证书与 0.4.x 归档包不同；覆盖安装旧测试包需先卸载，正式发行需独立受控密钥。
+- `git fetch` 在 schannel 下报 `SEC_E_NO_CREDENTIALS`；使用 `git -c http.sslBackend=openssl fetch` 成功。

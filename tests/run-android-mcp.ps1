@@ -18,7 +18,7 @@ $zip=[IO.Compression.ZipFile]::Open("$out\unsigned.apk",[IO.Compression.ZipArchi
 try{[IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip,"$out\dex\classes.dex",'classes.dex')|Out-Null}finally{$zip.Dispose()}
 Run "$bt\zipalign.exe" @('-f','4',"$out\unsigned.apk","$out\aligned.apk")
 Run "$JdkPath\bin\java.exe" @('-jar',"$bt\lib\apksigner.jar",'sign','--ks',"$project\build\signing\development.jks",'--ks-pass','pass:android','--key-pass','pass:android','--out',"$out\checks.apk","$out\aligned.apk")
-Run $adb @('-s',$Serial,'install','-r',"$project\build\outputs\NetCap-0.5.0-mcp-test.apk")
+Run $adb @('-s',$Serial,'install','-r',"$project\build\outputs\NetCap-0.6.0-three-features-test.apk")
 Run $adb @('-s',$Serial,'install','-r',"$out\checks.apk")
 Run $adb @('-s',$Serial,'shell','pm','grant','io.github.netcap.app','android.permission.POST_NOTIFICATIONS')
 if ($SdkCheck) {
