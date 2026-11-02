@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$SdkPath = $env:ANDROID_SDK_ROOT,
     [string]$JdkPath = '',
     [switch]$SkipX86
@@ -13,7 +13,7 @@ $ndkPath = Join-Path $SdkPath 'ndk\29.0.14206865'
 $buildTools = Join-Path $SdkPath 'build-tools\36.0.0'
 $llvmPath = Join-Path $ndkPath 'toolchains\llvm\prebuilt\windows-x86_64\bin'
 $outDir = Join-Path $projectDir 'build'
-$apkName = 'NetCap-0.4.4-storage-fix-test.apk'
+$apkName = 'NetCap-0.6.0-three-features-test.apk'
 $oldLocation = Get-Location
 $previousTmp = $env:TMP
 $previousTemp = $env:TEMP
@@ -51,6 +51,7 @@ try {
     Invoke-Checked "$JdkPath\bin\java.exe" @('-cp',"$buildTools\lib\d8.jar",'com.android.tools.r8.D8','--min-api','33','--lib',"$SdkPath\platforms\android-36\android.jar",'--output','build/dex','build/classes.jar')
     Copy-Item -LiteralPath 'build/resources.apk' -Destination 'build/unsigned.apk' -Force
     Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
     $apk = [IO.Compression.ZipFile]::Open((Join-Path $outDir 'unsigned.apk'),[IO.Compression.ZipArchiveMode]::Update)
     try {
         [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($apk,(Join-Path $outDir 'dex/classes.dex'),'classes.dex') | Out-Null

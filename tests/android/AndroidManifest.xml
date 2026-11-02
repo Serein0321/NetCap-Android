@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="io.github.netcap.tests">
+    <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="36" />
+    <application android:label="NetCap MCP checks" android:debuggable="true" />
+    <instrumentation android:name="io.github.netcap.app.McpUiChecks" android:targetPackage="io.github.netcap.app" android:functionalTest="true" />
+</manifest>

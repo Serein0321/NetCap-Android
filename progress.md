@@ -1,11 +1,10 @@
 # 进度
-- 2026-10-31：开始检查导出、目录选择和存储权限。
-- 已加入实际写入探测、导出失败文件状态处理、共享目录授权承接页面和选择器恢复逻辑。接下来增加失败/重名保护回归并构建。
-- 主机回归 17671 断言通过，其中新增导出文件检查 18；符号链接创建因 Windows 权限跳过。
-- 模拟器 API 36.1 实测未授权默认目录成功/共享根目录正确拒绝；授权后根目录与普通共享子目录导出和 ZIP 字节回读成功。
-- UI 实测授权提示 -> 系统所有文件开关 -> 返回自带目录选择器 -> 内部存储根目录 -> 使用此目录成功，settings.xml 中保存 /storage/emulated/0。
-- 已核验新旧 APK 签名证书 SHA256 一致：26005ecac9086b722b702570edac285ea14b5bdb4ca47d0f3c60055dd1a9ac84。
-- 完整 Android 自检发现旧测试值错误，已修正未知方向为实际导入值 2。正在最终构建后复测。
-- 最终 APK 构建及签名校验通过，并在模拟器覆盖安装成功；Android 完整自检、未授权和已授权存储专项检查均通过。
-- 最终 APK：build/outputs/NetCap-0.4.4-storage-fix-test.apk；SHA256：3DF187ED40E1078A35F05FBAC9AEA82F7151F794EF55EB0F1F8BA5D7D4BAF1E8。
-- 已完成 README 和 STORAGE_FIX.md 说明。未连接或修改用户实体设备，未验证实体手机 ROM/Root 采集。
+
+- 2026-11-02：完成 `integration/three-features` 分支审计。`feature/popup-ui`（`5245c6d`）实际已通过 `0ccb88d` 进入整合分支，`feature/mainactivity-mcp`（`093ca7f`）也已进入；真正缺失的是 `feature/storage-error`（`c2fb99a`）和 `feature/2` 的简化首页/MCP（`f4cf6b6`）。
+- 长按菜单的 `ContextMenuChecks`/`ContextMenuGeometry` 原本没有接入 `tests/run-checks.ps1`，整合时补齐；32,004 项菜单几何断言现在会随主机回归执行。
+- 已合并 `c2fb99a` 的导出/共享存储修复，再合并 `feature/2`；MCP 冲突统一采用 `feature/2` 的新实现，保留 popup-ui 的 `WorkspaceUi`、`ToolIcon` 图标和 `ContextMenuGeometry`。
+- 版本提升为 `0.6.0-three-features-test`（versionCode 13），避免与旧 0.5.0 MCP 测试包混淆。
+- 主机回归 49,735 项通过：5289 数据、1650 会话/几何、1579 TLS/主题、8043 画库/悬浮球、1057 文件工作区、35 归档、18 导出、32,004 长按菜单几何、60 MCP。
+- Android API36.1 模拟器通过 90 项首页/MCP 检查；官方 Python MCP SDK（initialize 2025-11-25、六工具、真实 fixture）通过。
+- 最终 APK：`build/outputs/NetCap-0.6.0-three-features-test.apk`；SHA-256 `E5D2FAC1C5B99E1FE06975E96A96B73D893AE3C2D30D0182A0E15A9D0DF173F6`。
+- 已更新 README、MCP.md、VERIFICATION.md。长按菜单的实际触摸、系统“管理所有文件”授权和共享目录导出仍需设备验收；未验证实体手机跨设备 Wi‑Fi/热点、Root 并发读取和厂商后台策略。
